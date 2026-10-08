@@ -1,0 +1,14 @@
+# Виртуальное окружение Python
+venv/
+env/
+ENV/
+.venv
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Прочие служебные файлы
+.DS_Store
+Thumbs.db

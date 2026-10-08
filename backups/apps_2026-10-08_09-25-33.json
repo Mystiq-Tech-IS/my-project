@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Steam",
+    "path": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Steam\\Steam.lnk",
+    "favorite": false,
+    "launch_count": 49,
+    "category": "games",
+    "custom_icon": "",
+    "order": 0,
+    "hotkey": "",
+    "custom_cover": "",
+    "companions": [],
+    "note": "",
+    "subcategory": "",
+    "known_version": "",
+    "_auto_cover_enabled": true
+  },
+  {
+    "name": "Broken Arrow",
+    "path": "steam://rungameid/1604270",
+    "favorite": false,
+    "launch_count": 0,
+    "category": "games",
+    "subcategory": "",
+    "custom_icon": "",
+    "custom_cover": "",
+    "order": 1,
+    "hotkey": "",
+    "companions": [],
+    "note": "",
+    "known_version": "",
+    "_auto_cover_enabled": true
+  }
+]
