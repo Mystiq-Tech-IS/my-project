@@ -1,14 +1,40 @@
-# Виртуальное окружение Python
-venv/
-env/
-ENV/
-.venv
-
-# Кэш Python
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
 
-# Прочие служебные файлы
-.DS_Store
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Данные лаунчера
+apps.json
+settings.json
+presets.json
+profiles.json
+stats.json
+games_cache.json
+launcher.log
+sgdb_cache.json
+sgdb_url_cache.json
+
+# Кэши
+.cover_cache/
+.game_covers/
+backups/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
 Thumbs.db
+.DS_Store
+
+# Секреты
+.env

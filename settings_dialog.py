@@ -10,10 +10,11 @@ from PySide6.QtWidgets import (
     QPushButton, QCheckBox, QComboBox, QSpinBox, QFileDialog,
     QListWidget, QListWidgetItem, QMessageBox, QTabWidget,
     QWidget, QFormLayout, QScrollArea, QFrame, QGridLayout,
-    QInputDialog, QColorDialog, QSlider,
+    QInputDialog, QColorDialog, QSlider, QToolButton, QSizePolicy,
+    QFontComboBox, QStackedWidget,
 )
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon, QPixmap, QColor
+from PySide6.QtGui import QIcon, QPixmap, QColor, QFont
 
 try:
     import qtawesome as qta
@@ -26,7 +27,8 @@ from dialogs import dialog_qss, show_info, show_error
 from storage import log, BACKUP_DIR
 from icons import clear_cache
 from config import (
-    BASE_DIR, APP_VERSION, GITHUB_REPO_URL, LATEST_VERSION, CATEGORIES,
+    BASE_DIR, APP_NAME, APP_VERSION, GITHUB_REPO_URL, LATEST_VERSION,
+    CATEGORIES,
 )
 import autostart
 import icon_map
@@ -34,6 +36,16 @@ import sounds
 import stats_charts
 import window_activation
 import sysmonitor
+import discord_rpc
+import cover_fetcher
+
+try:
+    from changelog import CHANGELOG, current_version_entry
+except ImportError:
+    CHANGELOG = []
+
+    def current_version_entry():
+        return None
 
 from stats import (
     load_stats, get_top, format_duration, reset_stats, by_category,
@@ -64,13 +76,15 @@ SOUND_EVENT_LABELS = [
 ]
 
 VOICE_EVENT_LABELS = [
-    ("startup",  "Запуск лаунчера"),
-    ("launch",   "Запуск программы"),
-    ("close",    "Завершение процесса"),
-    ("error",    "Ошибка"),
-    ("success",  "Успешное действие"),
-    ("info",     "Инфо-уведомления"),
-    ("shutdown", "Выход из лаунчера"),
+    ("startup",     "Запуск лаунчера"),
+    ("ready",       "Все системы готовы"),
+    ("launch",      "Запуск программы"),
+    ("close",       "Завершение процесса"),
+    ("error",       "Ошибка"),
+    ("success",     "Успешное действие"),
+    ("info",        "Инфо-уведомления"),
+    ("shutdown",    "Выход из лаунчера"),
+    ("click_every", "Каждый клик"),
 ]
 
 
@@ -333,6 +347,14 @@ class SettingsDialog(QDialog):
         self.custom_swatch_btn = None
         self._plugin_checks = {}
 
+        # Значения градиента (HEX или "")
+        self._gradient_color1 = (
+            settings.get("bg_gradient_color1", "") or ""
+        )
+        self._gradient_color2 = (
+            settings.get("bg_gradient_color2", "") or ""
+        )
+
         self.setWindowTitle("Настройки")
         self.setStyleSheet(dialog_qss(colors) + f"""
             QTabWidget::pane {{
@@ -368,7 +390,7 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {{
                 background: {colors['ACCENT']};
             }}
-            QSpinBox, QComboBox {{
+            QSpinBox, QComboBox, QFontComboBox {{
                 background-color: {colors['CARD']};
                 color: {colors['TEXT']};
                 border: 1px solid {colors['BORDER']};
@@ -414,7 +436,8 @@ class SettingsDialog(QDialog):
             }}
         """)
         self.setMinimumWidth(760)
-        self.setMinimumHeight(680)
+        self.setMinimumHeight(560)
+        self.resize(820, 720)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -480,7 +503,33 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(18, 18, 18, 18)
         lay.setSpacing(14)
 
-        # ---- Тема ----
+        # ---- Название лаунчера ----
+        h_name = QLabel("Название")
+        h_name.setProperty("sectionHeader", True)
+        lay.addWidget(h_name)
+
+        name_row = QHBoxLayout()
+        name_lbl = QLabel("Название лаунчера:")
+        name_lbl.setProperty("formLabel", True)
+        name_row.addWidget(name_lbl)
+
+        self.app_name_edit = QLineEdit(
+            self.settings.get("app_name", APP_NAME)
+        )
+        self.app_name_edit.setPlaceholderText(APP_NAME)
+        self.app_name_edit.setMaxLength(40)
+        name_row.addWidget(self.app_name_edit, 1)
+        lay.addLayout(name_row)
+
+        name_hint = QLabel(
+            "Это имя показывается в заголовке окна, в трее, на главном "
+            "экране и как буква-иконка в системном трее."
+        )
+        name_hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        name_hint.setWordWrap(True)
+        lay.addWidget(name_hint)
+
+        # ---- Тема оформления ----
         h = QLabel("Тема оформления")
         h.setProperty("sectionHeader", True)
         lay.addWidget(h)
@@ -500,7 +549,6 @@ class SettingsDialog(QDialog):
         theme_row.addStretch()
         lay.addLayout(theme_row)
 
-        # ---- Акцент ----
         accent_label = QLabel("Акцентный цвет:")
         accent_label.setProperty("formLabel", True)
         lay.addWidget(accent_label)
@@ -543,7 +591,6 @@ class SettingsDialog(QDialog):
 
         self._refresh_accent_buttons()
 
-        # ---- Размеры ----
         h2 = QLabel("Размеры и стиль")
         h2.setProperty("sectionHeader", True)
         lay.addWidget(h2)
@@ -579,7 +626,6 @@ class SettingsDialog(QDialog):
         )
         lay.addWidget(self.chk_material_icons)
 
-        # ---- Элементы интерфейса ----
         h3 = QLabel("Элементы интерфейса")
         h3.setProperty("sectionHeader", True)
         lay.addWidget(h3)
@@ -626,7 +672,6 @@ class SettingsDialog(QDialog):
 
         lay.addLayout(checks_grid)
 
-        # ---- Мониторинг системы ----
         h_mon = QLabel("Мониторинг системы")
         h_mon.setProperty("sectionHeader", True)
         lay.addWidget(h_mon)
@@ -690,7 +735,6 @@ class SettingsDialog(QDialog):
         av_lbl.setWordWrap(True)
         lay.addWidget(av_lbl)
 
-        # ---- Splash + фон ----
         h_extra = QLabel("Оформление и анимация")
         h_extra.setProperty("sectionHeader", True)
         lay.addWidget(h_extra)
@@ -719,6 +763,230 @@ class SettingsDialog(QDialog):
         particles_row.addStretch()
         lay.addLayout(particles_row)
 
+        # ---- Фон центральной области ----
+        h_bg = QLabel("Фон окна")
+        h_bg.setProperty("sectionHeader", True)
+        lay.addWidget(h_bg)
+
+        bg_type_row = QHBoxLayout()
+        bg_type_lbl = QLabel("Тип фона:")
+        bg_type_lbl.setProperty("formLabel", True)
+        bg_type_row.addWidget(bg_type_lbl)
+
+        self.bg_type_combo = QComboBox()
+        self.bg_type_combo.addItem("Частицы", "particles")
+        self.bg_type_combo.addItem("Сплошной цвет", "solid")
+        self.bg_type_combo.addItem("Градиент", "gradient")
+        self.bg_type_combo.addItem("Изображение", "image")
+        self.bg_type_combo.addItem("GIF-анимация", "gif")
+        self.bg_type_combo.addItem("Видео", "video")
+        cur_bg = self.settings.get("bg_type", "particles")
+        for i in range(self.bg_type_combo.count()):
+            if self.bg_type_combo.itemData(i) == cur_bg:
+                self.bg_type_combo.setCurrentIndex(i)
+                break
+        bg_type_row.addWidget(self.bg_type_combo)
+        bg_type_row.addStretch()
+        lay.addLayout(bg_type_row)
+
+        bg_path_row = QHBoxLayout()
+        self.bg_path_edit = QLineEdit(self.settings.get("bg_path", ""))
+        self.bg_path_edit.setPlaceholderText("(файл не выбран)")
+        bg_path_row.addWidget(self.bg_path_edit, 1)
+
+        btn_bg_pick = QPushButton("  Выбрать файл…")
+        btn_bg_pick.setIcon(_fa_icon("fa5s.folder-open", c["TEXT"]))
+        btn_bg_pick.clicked.connect(self._pick_bg_file)
+        bg_path_row.addWidget(btn_bg_pick)
+
+        btn_bg_clear = QPushButton("  Очистить")
+        btn_bg_clear.setIcon(_fa_icon("fa5s.times", c["DANGER"]))
+        btn_bg_clear.clicked.connect(lambda: self.bg_path_edit.setText(""))
+        bg_path_row.addWidget(btn_bg_clear)
+        lay.addLayout(bg_path_row)
+
+        bg_op_row = QHBoxLayout()
+        bg_op_lbl = QLabel("Непрозрачность:")
+        bg_op_lbl.setProperty("formLabel", True)
+        bg_op_row.addWidget(bg_op_lbl)
+
+        self.bg_opacity_slider = QSlider(Qt.Horizontal)
+        self.bg_opacity_slider.setRange(0, 100)
+        self.bg_opacity_slider.setValue(int(self.settings.get("bg_opacity", 100)))
+        self.bg_opacity_slider.setMinimumWidth(200)
+        bg_op_row.addWidget(self.bg_opacity_slider)
+
+        self.bg_opacity_label = QLabel(f"{self.bg_opacity_slider.value()} %")
+        self.bg_opacity_label.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 12px; background: transparent;"
+        )
+        self.bg_opacity_label.setMinimumWidth(46)
+        bg_op_row.addWidget(self.bg_opacity_label)
+
+        self.bg_opacity_slider.valueChanged.connect(
+            lambda v: self.bg_opacity_label.setText(f"{v} %")
+        )
+        bg_op_row.addStretch()
+        lay.addLayout(bg_op_row)
+
+        self.chk_bg_video_muted = QCheckBox("Видео без звука")
+        self.chk_bg_video_muted.setChecked(
+            self.settings.get("bg_video_muted", True)
+        )
+        lay.addWidget(self.chk_bg_video_muted)
+
+        bg_hint = QLabel(
+            "Изображение / GIF / видео растягивается на всю область "
+            "(без искажения пропорций). «Непрозрачность» регулирует "
+            "насколько ярко виден файл — 0% полностью скрывает его."
+        )
+        bg_hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        bg_hint.setWordWrap(True)
+        lay.addWidget(bg_hint)
+
+        # ---- Градиент ----
+        h_grad = QLabel("Градиент")
+        h_grad.setProperty("sectionHeader", True)
+        lay.addWidget(h_grad)
+
+        grad_hint = QLabel(
+            "Два цвета, между которыми плавно переходит фон. "
+            "Если оставить пустыми — берётся акцент темы и фон."
+        )
+        grad_hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        grad_hint.setWordWrap(True)
+        lay.addWidget(grad_hint)
+
+        grad_colors_row = QHBoxLayout()
+        grad_colors_row.setSpacing(8)
+
+        self.btn_gradient_color1 = QPushButton()
+        self.btn_gradient_color1.setFixedSize(80, 34)
+        self.btn_gradient_color1.setCursor(Qt.PointingHandCursor)
+        self.btn_gradient_color1.clicked.connect(
+            lambda: self._pick_gradient_color(1)
+        )
+        grad_colors_row.addWidget(self.btn_gradient_color1)
+
+        self.btn_gradient_color2 = QPushButton()
+        self.btn_gradient_color2.setFixedSize(80, 34)
+        self.btn_gradient_color2.setCursor(Qt.PointingHandCursor)
+        self.btn_gradient_color2.clicked.connect(
+            lambda: self._pick_gradient_color(2)
+        )
+        grad_colors_row.addWidget(self.btn_gradient_color2)
+
+        btn_grad_reset = QPushButton("  Сбросить цвета")
+        btn_grad_reset.setFixedHeight(34)
+        btn_grad_reset.clicked.connect(self._reset_gradient_colors)
+        grad_colors_row.addWidget(btn_grad_reset)
+
+        grad_colors_row.addStretch()
+        lay.addLayout(grad_colors_row)
+
+        self._refresh_gradient_buttons()
+
+        angle_row = QHBoxLayout()
+        angle_lbl = QLabel("Угол:")
+        angle_lbl.setProperty("formLabel", True)
+        angle_lbl.setMinimumWidth(60)
+        angle_row.addWidget(angle_lbl)
+
+        self.slider_gradient_angle = QSlider(Qt.Horizontal)
+        self.slider_gradient_angle.setRange(0, 359)
+        self.slider_gradient_angle.setValue(
+            int(self.settings.get("bg_gradient_angle", 45))
+        )
+        self.slider_gradient_angle.setMinimumWidth(200)
+        angle_row.addWidget(self.slider_gradient_angle)
+
+        self.lbl_gradient_angle = QLabel(
+            f"{self.slider_gradient_angle.value()}°"
+        )
+        self.lbl_gradient_angle.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 12px; background: transparent;"
+        )
+        self.lbl_gradient_angle.setMinimumWidth(46)
+        angle_row.addWidget(self.lbl_gradient_angle)
+
+        self.slider_gradient_angle.valueChanged.connect(
+            lambda v: self.lbl_gradient_angle.setText(f"{v}°")
+        )
+        angle_row.addStretch()
+        lay.addLayout(angle_row)
+
+        # ---- Прозрачность окна ----
+        h_win_op = QLabel("Прозрачность окна")
+        h_win_op.setProperty("sectionHeader", True)
+        lay.addWidget(h_win_op)
+
+        win_op_hint = QLabel(
+            "60% — окно почти прозрачное, 100% — обычная плотность."
+        )
+        win_op_hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        win_op_hint.setWordWrap(True)
+        lay.addWidget(win_op_hint)
+
+        win_op_row = QHBoxLayout()
+        win_op_lbl = QLabel("Непрозрачность:")
+        win_op_lbl.setProperty("formLabel", True)
+        win_op_lbl.setMinimumWidth(120)
+        win_op_row.addWidget(win_op_lbl)
+
+        self.slider_window_opacity = QSlider(Qt.Horizontal)
+        self.slider_window_opacity.setRange(60, 100)
+        self.slider_window_opacity.setValue(
+            max(60, min(100, int(self.settings.get("window_opacity", 100))))
+        )
+        self.slider_window_opacity.setMinimumWidth(200)
+        win_op_row.addWidget(self.slider_window_opacity)
+
+        self.lbl_window_opacity = QLabel(
+            f"{self.slider_window_opacity.value()}%"
+        )
+        self.lbl_window_opacity.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 12px; background: transparent;"
+        )
+        self.lbl_window_opacity.setMinimumWidth(46)
+        win_op_row.addWidget(self.lbl_window_opacity)
+
+        self.slider_window_opacity.valueChanged.connect(
+            lambda v: self.lbl_window_opacity.setText(f"{v}%")
+        )
+        win_op_row.addStretch()
+        lay.addLayout(win_op_row)
+
+        # ---- Шрифт заголовка ----
+        h_font = QLabel("Шрифт заголовка")
+        h_font.setProperty("sectionHeader", True)
+        lay.addWidget(h_font)
+
+        font_row = QHBoxLayout()
+        font_lbl = QLabel("Шрифт:")
+        font_lbl.setProperty("formLabel", True)
+        font_lbl.setMinimumWidth(60)
+        font_row.addWidget(font_lbl)
+
+        self.font_combo = QFontComboBox()
+        self.font_combo.setMinimumWidth(260)
+        cur_font = (
+            self.settings.get("title_font_family", "Segoe UI") or "Segoe UI"
+        )
+        try:
+            self.font_combo.setCurrentFont(QFont(cur_font))
+        except Exception:
+            pass
+        font_row.addWidget(self.font_combo)
+        font_row.addStretch()
+        lay.addLayout(font_row)
+
+        font_hint = QLabel(
+            "Применяется только к названию лаунчера на главном экране."
+        )
+        font_hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        font_hint.setWordWrap(True)
+        lay.addWidget(font_hint)
+
         lay.addStretch()
         self.tabs.addTab(outer, "  Внешний вид")
 
@@ -742,7 +1010,6 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(18, 18, 18, 18)
         lay.setSpacing(14)
 
-        # ---- Горячие клавиши ----
         h = QLabel("Горячие клавиши")
         h.setProperty("sectionHeader", True)
         lay.addWidget(h)
@@ -762,7 +1029,6 @@ class SettingsDialog(QDialog):
 
         lay.addLayout(form)
 
-        # ---- Запуск и закрытие ----
         h2 = QLabel("Запуск и закрытие")
         h2.setProperty("sectionHeader", True)
         lay.addWidget(h2)
@@ -805,7 +1071,6 @@ class SettingsDialog(QDialog):
             self.chk_autostart.setChecked(False)
         lay.addWidget(self.chk_autostart)
 
-        # ---- Прочее ----
         h3 = QLabel("Прочее")
         h3.setProperty("sectionHeader", True)
         lay.addWidget(h3)
@@ -828,7 +1093,6 @@ class SettingsDialog(QDialog):
         )
         lay.addWidget(self.chk_companions)
 
-        # ---- Активация окон ----
         h_aw = QLabel("Активация окон")
         h_aw.setProperty("sectionHeader", True)
         lay.addWidget(h_aw)
@@ -849,6 +1113,7 @@ class SettingsDialog(QDialog):
         )
         lay.addWidget(self.chk_activate_after_launch)
 
+        # Предупреждение о pywin32 — один раз, вне блока Discord
         if not window_activation.has_support():
             aw_warn = QLabel(
                 "⚠ Установите библиотеку pywin32 для точной активации."
@@ -859,7 +1124,100 @@ class SettingsDialog(QDialog):
             aw_warn.setWordWrap(True)
             lay.addWidget(aw_warn)
 
-        # ---- Звуки ----
+        # ==================== DISCORD RICH PRESENCE ====================
+        h_disc = QLabel("Discord Rich Presence")
+        h_disc.setProperty("sectionHeader", True)
+        lay.addWidget(h_disc)
+
+        discord_hint = QLabel(
+            "Показывает в Discord статус «Играет в ...» с таймером сессии.\n"
+            "Как включить:\n"
+            "  1. Открой discord.com/developers/applications\n"
+            "  2. New Application → назови (например, MyLauncher).\n"
+            "  3. Скопируй Application ID — это и есть client_id.\n"
+            "  4. Rich Presence → Art Assets: загрузи логотип\n"
+            "     и назови ассет «logo»."
+        )
+        discord_hint.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 11px;"
+        )
+        discord_hint.setWordWrap(True)
+        lay.addWidget(discord_hint)
+
+        self.chk_discord = QCheckBox("Включить Discord Rich Presence")
+        self.chk_discord.setChecked(
+            self.settings.get("discord_enabled", False)
+        )
+        lay.addWidget(self.chk_discord)
+
+        client_row = QHBoxLayout()
+        client_lbl = QLabel("Client ID:")
+        client_lbl.setProperty("formLabel", True)
+        client_lbl.setMinimumWidth(120)
+        client_row.addWidget(client_lbl)
+        self.discord_client_id_edit = QLineEdit(
+            self.settings.get("discord_client_id", "")
+        )
+        self.discord_client_id_edit.setPlaceholderText(
+            "например: 1234567890123456789"
+        )
+        client_row.addWidget(self.discord_client_id_edit, 1)
+        lay.addLayout(client_row)
+
+        img_row = QHBoxLayout()
+        img_lbl = QLabel("Ассет картинки:")
+        img_lbl.setProperty("formLabel", True)
+        img_lbl.setMinimumWidth(120)
+        img_row.addWidget(img_lbl)
+        self.discord_large_image_edit = QLineEdit(
+            self.settings.get("discord_large_image", "logo")
+        )
+        self.discord_large_image_edit.setPlaceholderText("logo")
+        img_row.addWidget(self.discord_large_image_edit, 1)
+        lay.addLayout(img_row)
+
+        text_row = QHBoxLayout()
+        text_lbl = QLabel("Текст картинки:")
+        text_lbl.setProperty("formLabel", True)
+        text_lbl.setMinimumWidth(120)
+        text_row.addWidget(text_lbl)
+        self.discord_large_text_edit = QLineEdit(
+            self.settings.get("discord_large_text", APP_NAME)
+        )
+        self.discord_large_text_edit.setPlaceholderText(APP_NAME)
+        text_row.addWidget(self.discord_large_text_edit, 1)
+        lay.addLayout(text_row)
+
+        self.chk_discord_idle = QCheckBox(
+            "Показывать статус даже когда ничего не запущено"
+        )
+        self.chk_discord_idle.setChecked(
+            self.settings.get("discord_show_when_idle", True)
+        )
+        lay.addWidget(self.chk_discord_idle)
+
+        discord_btns = QHBoxLayout()
+        discord_btns.addStretch()
+        btn_dev_portal = QPushButton("  Открыть Discord Developer Portal")
+        btn_dev_portal.setIcon(_fa_icon("fa5s.link", c["TEXT"]))
+        btn_dev_portal.clicked.connect(
+            lambda: webbrowser.open("https://discord.com/developers/applications")
+        )
+        discord_btns.addWidget(btn_dev_portal)
+        discord_btns.addStretch()
+        lay.addLayout(discord_btns)
+
+        if not discord_rpc.HAS_PYPRESENCE:
+            warn_disc = QLabel(
+                "⚠ Модуль pypresence не установлен — интеграция недоступна.\n"
+                "Установи: pip install pypresence"
+            )
+            warn_disc.setStyleSheet(
+                f"color: {c['DANGER']}; font-size: 11px; padding-top: 4px;"
+            )
+            warn_disc.setWordWrap(True)
+            lay.addWidget(warn_disc)
+
         h4 = QLabel("Звуки интерфейса")
         h4.setProperty("sectionHeader", True)
         lay.addWidget(h4)
@@ -926,7 +1284,6 @@ class SettingsDialog(QDialog):
         sound_btns.addStretch()
         lay.addLayout(sound_btns)
 
-        # ---- Голосовые фразы ----
         h5 = QLabel("Голосовые фразы")
         h5.setProperty("sectionHeader", True)
         lay.addWidget(h5)
@@ -1261,6 +1618,43 @@ class SettingsDialog(QDialog):
         self._refresh_profiles_list()
 
     def _sync_ui_from_settings(self, s):
+        if hasattr(self, "app_name_edit"):
+            self.app_name_edit.setText(s.get("app_name", APP_NAME))
+        if hasattr(self, "bg_type_combo"):
+            for i in range(self.bg_type_combo.count()):
+                if self.bg_type_combo.itemData(i) == s.get("bg_type", "particles"):
+                    self.bg_type_combo.setCurrentIndex(i)
+                    break
+        if hasattr(self, "bg_path_edit"):
+            self.bg_path_edit.setText(s.get("bg_path", ""))
+        if hasattr(self, "bg_opacity_slider"):
+            self.bg_opacity_slider.setValue(int(s.get("bg_opacity", 100)))
+        if hasattr(self, "chk_bg_video_muted"):
+            self.chk_bg_video_muted.setChecked(bool(s.get("bg_video_muted", True)))
+
+        # Градиент
+        self._gradient_color1 = s.get("bg_gradient_color1", "") or ""
+        self._gradient_color2 = s.get("bg_gradient_color2", "") or ""
+        if hasattr(self, "slider_gradient_angle"):
+            self.slider_gradient_angle.setValue(
+                int(s.get("bg_gradient_angle", 45))
+            )
+        if hasattr(self, "btn_gradient_color1"):
+            self._refresh_gradient_buttons()
+
+        # Прозрачность окна
+        if hasattr(self, "slider_window_opacity"):
+            v = max(60, min(100, int(s.get("window_opacity", 100))))
+            self.slider_window_opacity.setValue(v)
+
+        # Шрифт заголовка
+        if hasattr(self, "font_combo"):
+            try:
+                fname = s.get("title_font_family", "Segoe UI") or "Segoe UI"
+                self.font_combo.setCurrentFont(QFont(fname))
+            except Exception:
+                pass
+
         for i in range(self.theme_combo.count()):
             if self.theme_combo.itemData(i) == s.get("theme", "dark"):
                 self.theme_combo.setCurrentIndex(i)
@@ -1311,20 +1705,65 @@ class SettingsDialog(QDialog):
         events = s.get("sound_events") or {}
         for key, box in self.sound_event_boxes.items():
             box.setChecked(bool(events.get(key, True)))
+
         self.chk_voice.setChecked(s.get("voice_enabled", False))
         self.slider_voice_volume.setValue(int(s.get("voice_volume", 80)))
         v_events = s.get("voice_events") or {}
         for key, box in self.voice_event_boxes.items():
             box.setChecked(bool(v_events.get(key, True)))
 
+        # Discord / SteamGridDB — вне цикла
+        if hasattr(self, "chk_discord"):
+            self.chk_discord.setChecked(bool(s.get("discord_enabled", False)))
+        if hasattr(self, "discord_client_id_edit"):
+            self.discord_client_id_edit.setText(
+                s.get("discord_client_id", "") or ""
+            )
+        if hasattr(self, "discord_large_image_edit"):
+            self.discord_large_image_edit.setText(
+                s.get("discord_large_image", "logo") or "logo"
+            )
+        if hasattr(self, "discord_large_text_edit"):
+            self.discord_large_text_edit.setText(
+                s.get("discord_large_text", APP_NAME) or APP_NAME
+            )
+        if hasattr(self, "chk_discord_idle"):
+            self.chk_discord_idle.setChecked(
+                bool(s.get("discord_show_when_idle", True))
+            )
+        if hasattr(self, "chk_sgdb"):
+            self.chk_sgdb.setChecked(
+                bool(s.get("steamgriddb_enabled", True))
+            )
+        if hasattr(self, "sgdb_api_edit"):
+            self.sgdb_api_edit.setText(
+                s.get("steamgriddb_api_key", "") or ""
+            )
+
     # ==================== ВКЛАДКА 4: ДАННЫЕ ====================
     def _build_data_tab(self):
         c = self.colors
+
+        outer_tab = QWidget()
+        outer_lay = QVBoxLayout(outer_tab)
+        outer_lay.setContentsMargins(0, 0, 0, 0)
+        outer_lay.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+        outer_lay.addWidget(scroll)
+
         tab = QWidget()
+        tab.setStyleSheet("background: transparent;")
+        scroll.setWidget(tab)
+
         lay = QVBoxLayout(tab)
         lay.setContentsMargins(18, 18, 18, 18)
         lay.setSpacing(12)
 
+        # ================= СПИСОК ПРОГРАММ =================
         h = QLabel("Список программ")
         h.setProperty("sectionHeader", True)
         lay.addWidget(h)
@@ -1342,6 +1781,7 @@ class SettingsDialog(QDialog):
         row1.addStretch()
         lay.addLayout(row1)
 
+        # ================= ОБЛАКО =================
         h2 = QLabel("Облако")
         h2.setProperty("sectionHeader", True)
         lay.addWidget(h2)
@@ -1359,9 +1799,43 @@ class SettingsDialog(QDialog):
         row2.addStretch()
         lay.addLayout(row2)
 
+        # ================= ЛОКАЛЬНЫЕ ДАННЫЕ =================
         h3 = QLabel("Локальные данные")
         h3.setProperty("sectionHeader", True)
         lay.addWidget(h3)
+
+        # ---- Автобэкап ----
+        self.chk_autobackup = QCheckBox("Автобэкап apps + settings + presets по расписанию")
+        self.chk_autobackup.setChecked(
+            self.settings.get("autobackup_enabled", True)
+        )
+        lay.addWidget(self.chk_autobackup)
+
+        ab_row = QHBoxLayout()
+        ab_lbl = QLabel("Интервал бэкапа:")
+        ab_lbl.setProperty("formLabel", True)
+        ab_lbl.setMinimumWidth(140)
+        ab_row.addWidget(ab_lbl)
+
+        self.spin_autobackup_interval = QSpinBox()
+        self.spin_autobackup_interval.setRange(5, 1440)
+        self.spin_autobackup_interval.setSuffix(" мин")
+        self.spin_autobackup_interval.setValue(
+            int(self.settings.get("autobackup_interval_minutes", 60))
+        )
+        ab_row.addWidget(self.spin_autobackup_interval)
+        ab_row.addStretch()
+        lay.addLayout(ab_row)
+
+        self.chk_show_load_errors = QCheckBox(
+            "Показывать уведомление при ошибке загрузки данных"
+        )
+        self.chk_show_load_errors.setChecked(
+            self.settings.get("show_load_errors", True)
+        )
+        lay.addWidget(self.chk_show_load_errors)
+
+        lay.addSpacing(6)
 
         row3 = QHBoxLayout()
         row3.setSpacing(8)
@@ -1382,6 +1856,71 @@ class SettingsDialog(QDialog):
         row3.addStretch()
         lay.addLayout(row3)
 
+        # Кнопка очистки кэша SteamGridDB
+        row3b = QHBoxLayout()
+        row3b.setSpacing(8)
+        btn_clear_sgdb = QPushButton("  Очистить кэш обложек SteamGridDB")
+        btn_clear_sgdb.setIcon(_fa_icon("fa5s.broom", c["DANGER"]))
+        btn_clear_sgdb.clicked.connect(self._clear_sgdb_cache)
+        row3b.addWidget(btn_clear_sgdb)
+        row3b.addStretch()
+        lay.addLayout(row3b)
+
+        # ================= STEAMGRIDDB =================
+        h_sgdb = QLabel("Обложки из интернета (SteamGridDB)")
+        h_sgdb.setProperty("sectionHeader", True)
+        lay.addWidget(h_sgdb)
+
+        sgdb_hint = QLabel(
+            "SteamGridDB — бесплатный сервис с обложками для игр.\n"
+            "Как получить API-ключ:\n"
+            "  1. Зайди на steamgriddb.com и войди через Steam.\n"
+            "  2. Preferences → API → Generate Key.\n"
+            "  3. Скопируй ключ и вставь в поле ниже."
+        )
+        sgdb_hint.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 11px;"
+        )
+        sgdb_hint.setWordWrap(True)
+        lay.addWidget(sgdb_hint)
+
+        self.chk_sgdb = QCheckBox("Подтягивать обложки из SteamGridDB")
+        self.chk_sgdb.setChecked(
+            self.settings.get("steamgriddb_enabled", True)
+        )
+        lay.addWidget(self.chk_sgdb)
+
+        sgdb_row = QHBoxLayout()
+        sgdb_lbl = QLabel("API Key:")
+        sgdb_lbl.setProperty("formLabel", True)
+        sgdb_lbl.setMinimumWidth(90)
+        sgdb_row.addWidget(sgdb_lbl)
+        self.sgdb_api_edit = QLineEdit(
+            self.settings.get("steamgriddb_api_key", "")
+        )
+        self.sgdb_api_edit.setPlaceholderText(
+            "например: 0123456789abcdef0123456789abcdef"
+        )
+        self.sgdb_api_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        sgdb_row.addWidget(self.sgdb_api_edit, 1)
+        lay.addLayout(sgdb_row)
+
+        sgdb_btns = QHBoxLayout()
+        sgdb_btns.addStretch()
+        btn_sgdb_portal = QPushButton("  Открыть SteamGridDB")
+        btn_sgdb_portal.setIcon(_fa_icon("fa5s.link", c["TEXT"]))
+        btn_sgdb_portal.clicked.connect(
+            lambda: webbrowser.open(
+                "https://www.steamgriddb.com/profile/preferences/api"
+            )
+        )
+        sgdb_btns.addWidget(btn_sgdb_portal)
+        sgdb_btns.addStretch()
+        lay.addLayout(sgdb_btns)
+
+        lay.addSpacing(10)
+
+        # ================= СТАТИСТИКА И ЗАМЕТКИ =================
         h4 = QLabel("Статистика и заметки")
         h4.setProperty("sectionHeader", True)
         lay.addWidget(h4)
@@ -1401,7 +1940,8 @@ class SettingsDialog(QDialog):
         lay.addLayout(row4)
 
         lay.addStretch()
-        self.tabs.addTab(tab, "  Данные")
+
+        self.tabs.addTab(outer_tab, "  Данные")
 
     # ==================== ВКЛАДКА 5: ПЛАГИНЫ ====================
     def _build_plugins_tab(self):
@@ -1593,12 +2133,28 @@ class SettingsDialog(QDialog):
     # ==================== ВКЛАДКА 6: О ПРОГРАММЕ ====================
     def _build_about_tab(self):
         c = self.colors
+
+        outer_tab = QWidget()
+        outer_lay = QVBoxLayout(outer_tab)
+        outer_lay.setContentsMargins(0, 0, 0, 0)
+        outer_lay.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+        outer_lay.addWidget(scroll)
+
         tab = QWidget()
+        tab.setStyleSheet("background: transparent;")
+        scroll.setWidget(tab)
+
         lay = QVBoxLayout(tab)
-        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setContentsMargins(24, 20, 24, 24)
         lay.setSpacing(14)
 
-        title = QLabel("Мой лаунчер")
+        # ================= ШАПКА =================
+        title = QLabel(self.settings.get("app_name", APP_NAME))
         title.setStyleSheet(
             f"color: {c['ACCENT']}; font-size: 22px; font-weight: bold;"
         )
@@ -1610,12 +2166,261 @@ class SettingsDialog(QDialog):
         ver.setAlignment(Qt.AlignCenter)
         lay.addWidget(ver)
 
-        lay.addSpacing(20)
+        lay.addSpacing(6)
 
-        modules_label = QLabel("Установленные модули")
-        modules_label.setProperty("sectionHeader", True)
-        modules_label.setAlignment(Qt.AlignCenter)
-        lay.addWidget(modules_label)
+        # ================= КНОПКИ-ПЕРЕКЛЮЧАТЕЛИ =================
+        self._about_buttons = {}
+        self._about_stack = QStackedWidget()
+        self._about_stack.setStyleSheet("background: transparent; border: none;")
+
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(8)
+        buttons_row.addStretch()
+
+        sections = [
+            ("whats_new", "  Что нового", "fa5s.star"),
+            ("history", "  История версий", "fa5s.history"),
+            ("modules", "  Модули", "fa5s.box"),
+            ("tray", "  Иконка трея", "fa5s.image"),
+        ]
+
+        for key, label, icon_name in sections:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(36)
+            btn.setMinimumWidth(160)
+            try:
+                btn.setIcon(_fa_icon(icon_name, c["TEXT"]))
+                btn.setIconSize(QSize(16, 16))
+            except Exception:
+                pass
+            btn.clicked.connect(
+                lambda _=False, k=key: self._switch_about_section(k)
+            )
+            buttons_row.addWidget(btn)
+            self._about_buttons[key] = btn
+
+        buttons_row.addStretch()
+        lay.addLayout(buttons_row)
+
+        lay.addSpacing(6)
+
+        # ================= СТРАНИЦЫ STACK =================
+
+        # ---- Страница 1: Что нового ----
+        page_whats = self._make_about_whats_new_page()
+        self._about_stack.addWidget(page_whats)
+
+        # ---- Страница 2: История версий ----
+        page_history = self._make_about_history_page()
+        self._about_stack.addWidget(page_history)
+
+        # ---- Страница 3: Модули ----
+        page_modules = self._make_about_modules_page()
+        self._about_stack.addWidget(page_modules)
+
+        # ---- Страница 4: Иконка трея ----
+        page_tray = self._make_about_tray_page()
+        self._about_stack.addWidget(page_tray)
+
+        lay.addWidget(self._about_stack)
+
+        lay.addSpacing(16)
+
+        # ================= ОБНОВЛЕНИЯ =================
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_update = QPushButton("  Проверить обновления")
+        btn_update.setIcon(_fa_icon("fa5s.sync-alt", c["TEXT"]))
+        btn_update.setMinimumHeight(36)
+        btn_update.clicked.connect(self._check_updates)
+        btn_row.addWidget(btn_update)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        lay.addStretch()
+
+        self.tabs.addTab(outer_tab, "  О программе")
+
+        # По умолчанию — «Что нового»
+        self._switch_about_section("whats_new")
+
+    def _switch_about_section(self, key):
+        """Переключает активную секцию внутри вкладки «О программе»."""
+        c = self.colors
+
+        index_map = {
+            "whats_new": 0,
+            "history": 1,
+            "modules": 2,
+            "tray": 3,
+        }
+        if key not in index_map:
+            return
+
+        self._about_stack.setCurrentIndex(index_map[key])
+
+        for k, btn in self._about_buttons.items():
+            active = (k == key)
+            btn.setChecked(active)
+
+            # Цвет иконки: активная — на фоне ACCENT, неактивная — на CARD
+            icon_name = {
+                "whats_new": "fa5s.star",
+                "history": "fa5s.history",
+                "modules": "fa5s.box",
+                "tray": "fa5s.image",
+            }.get(k, "fa5s.circle")
+
+            try:
+                btn.setIcon(_fa_icon(icon_name, c["BG"] if active else c["TEXT"]))
+            except Exception:
+                pass
+
+            if active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {c['ACCENT']};
+                        color: {c['BG']};
+                        border: 1px solid {c['ACCENT']};
+                        border-radius: 10px;
+                        padding: 6px 18px;
+                        font-size: 13px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{ background-color: {c['ACCENT_HOV']}; }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {c['CARD']};
+                        color: {c['TEXT']};
+                        border: 1px solid {c['BORDER']};
+                        border-radius: 10px;
+                        padding: 6px 18px;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {c['CARD_HOVER']};
+                        border: 1px solid {c['ACCENT']};
+                    }}
+                """)
+
+    def _make_about_whats_new_page(self):
+        """Страница «Что нового»."""
+        c = self.colors
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(10)
+
+        current = current_version_entry()
+        if not current:
+            empty = QLabel("Информация о текущей версии недоступна.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 13px;")
+            lay.addWidget(empty)
+            lay.addStretch()
+            return page
+
+        header = QLabel(f"Что нового в {current['version']}")
+        header.setProperty("sectionHeader", True)
+        header.setAlignment(Qt.AlignCenter)
+        lay.addWidget(header)
+
+        frame = QFrame()
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {c['BG_ALT']};
+                border: 1px solid {c['ACCENT']};
+                border-radius: 12px;
+            }}
+        """)
+        fl = QVBoxLayout(frame)
+        fl.setContentsMargins(20, 18, 20, 18)
+        fl.setSpacing(6)
+
+        wn_title = QLabel(current.get("title", ""))
+        wn_title.setWordWrap(True)
+        wn_title.setStyleSheet(
+            f"color: {c['ACCENT']}; font-size: 14px; "
+            f"font-weight: bold; background: transparent; border: none;"
+        )
+        fl.addWidget(wn_title)
+
+        wn_date = QLabel(current.get("date", ""))
+        wn_date.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 11px; "
+            f"background: transparent; border: none;"
+        )
+        fl.addWidget(wn_date)
+
+        fl.addSpacing(8)
+
+        for change in current["changes"]:
+            row = QLabel(f"•  {change}")
+            row.setWordWrap(True)
+            row.setStyleSheet(
+                f"color: {c['TEXT']}; font-size: 12px; "
+                f"background: transparent; border: none;"
+            )
+            fl.addWidget(row)
+
+        lay.addWidget(frame)
+        lay.addStretch()
+        return page
+
+    def _make_about_history_page(self):
+        """Страница «История версий»."""
+        c = self.colors
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(10)
+
+        if not CHANGELOG:
+            empty = QLabel("История версий пуста.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 13px;")
+            lay.addWidget(empty)
+            lay.addStretch()
+            return page
+
+        header = QLabel("История версий")
+        header.setProperty("sectionHeader", True)
+        header.setAlignment(Qt.AlignCenter)
+        lay.addWidget(header)
+
+        hint = QLabel("Нажми на версию, чтобы увидеть список изменений.")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(
+            f"color: {c['SUBTEXT']}; font-size: 11px; padding-bottom: 4px;"
+        )
+        lay.addWidget(hint)
+
+        for i, entry in enumerate(CHANGELOG):
+            lay.addWidget(self._make_version_entry(entry, is_current=(i == 0)))
+
+        lay.addStretch()
+        return page
+
+    def _make_about_modules_page(self):
+        """Страница «Установленные модули»."""
+        c = self.colors
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(10)
+
+        header = QLabel("Установленные модули")
+        header.setProperty("sectionHeader", True)
+        header.setAlignment(Qt.AlignCenter)
+        lay.addWidget(header)
 
         try:
             mon_info = sysmonitor.is_supported()
@@ -1632,40 +2437,42 @@ class SettingsDialog(QDialog):
             ("matplotlib", stats_charts.has_matplotlib(), "Графики статистики"),
             ("pywin32", window_activation.HAS_PYWIN32, "Активация окон"),
         ]
+
         for name, ok, desc in mods:
             row = QLabel()
             row.setAlignment(Qt.AlignCenter)
+            row.setWordWrap(True)
+            row.setMinimumHeight(24)
             mark = "✅" if ok else "❌"
             color = c["OK"] if ok else c["DANGER"]
             row.setText(f"{mark}  {name}  —  {desc}")
             row.setStyleSheet(f"color: {color}; font-size: 13px;")
             lay.addWidget(row)
 
-        lay.addSpacing(20)
+        lay.addStretch()
+        return page
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_update = QPushButton("  Проверить обновления")
-        btn_update.setIcon(_fa_icon("fa5s.sync-alt", c["TEXT"]))
-        btn_update.clicked.connect(self._check_updates)
-        btn_row.addWidget(btn_update)
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
+    def _make_about_tray_page(self):
+        """Страница «Иконка лаунчера в трее»."""
+        c = self.colors
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(10)
 
-        lay.addSpacing(20)
-
-        icon_header = QLabel("Иконка лаунчера в трее")
-        icon_header.setProperty("sectionHeader", True)
-        icon_header.setAlignment(Qt.AlignCenter)
-        lay.addWidget(icon_header)
+        header = QLabel("Иконка лаунчера в трее")
+        header.setProperty("sectionHeader", True)
+        header.setAlignment(Qt.AlignCenter)
+        lay.addWidget(header)
 
         preview_row = QHBoxLayout()
         preview_row.addStretch()
         self.tray_icon_preview = QLabel()
-        self.tray_icon_preview.setFixedSize(48, 48)
+        self.tray_icon_preview.setFixedSize(64, 64)
         self.tray_icon_preview.setStyleSheet(
             f"background-color: {c['CARD']}; "
-            f"border: 1px solid {c['BORDER']}; border-radius: 10px;"
+            f"border: 1px solid {c['BORDER']}; border-radius: 12px;"
         )
         self.tray_icon_preview.setAlignment(Qt.AlignCenter)
         self._refresh_tray_icon_preview()
@@ -1673,21 +2480,109 @@ class SettingsDialog(QDialog):
         preview_row.addStretch()
         lay.addLayout(preview_row)
 
-        tray_btns = QHBoxLayout()
-        tray_btns.addStretch()
-        btn_pick_icon = QPushButton("  Выбрать PNG / ICO")
-        btn_pick_icon.setIcon(_fa_icon("fa5s.image", c["TEXT"]))
-        btn_pick_icon.clicked.connect(self._pick_tray_icon)
-        tray_btns.addWidget(btn_pick_icon)
-        btn_reset_icon = QPushButton("  Сбросить")
-        btn_reset_icon.setIcon(_fa_icon("fa5s.undo", c["DANGER"]))
-        btn_reset_icon.clicked.connect(self._reset_tray_icon)
-        tray_btns.addWidget(btn_reset_icon)
-        tray_btns.addStretch()
-        lay.addLayout(tray_btns)
+        hint = QLabel(
+            "Если PNG / ICO не выбран, в трее показывается первая буква "
+            "названия лаунчера на акцентном фоне."
+        )
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {c['SUBTEXT']}; font-size: 11px;")
+        lay.addWidget(hint)
+
+        lay.addSpacing(8)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch()
+
+        btn_pick = QPushButton("  Выбрать PNG / ICO")
+        btn_pick.setIcon(_fa_icon("fa5s.image", c["TEXT"]))
+        btn_pick.setMinimumHeight(36)
+        btn_pick.clicked.connect(self._pick_tray_icon)
+        btns.addWidget(btn_pick)
+
+        btn_reset = QPushButton("  Сбросить")
+        btn_reset.setIcon(_fa_icon("fa5s.undo", c["DANGER"]))
+        btn_reset.setMinimumHeight(36)
+        btn_reset.clicked.connect(self._reset_tray_icon)
+        btns.addWidget(btn_reset)
+
+        btns.addStretch()
+        lay.addLayout(btns)
 
         lay.addStretch()
-        self.tabs.addTab(tab, "  О программе")
+        return page
+
+    def _make_version_entry(self, entry, is_current=False):
+        """Разворачивающийся блок одной версии для вкладки «О программе»."""
+        c = self.colors
+
+        wrapper = QFrame()
+        wrapper.setStyleSheet(f"""
+            QFrame {{
+                background-color: {c['BG_ALT']};
+                border: 1px solid {c['ACCENT'] if is_current else c['BORDER']};
+                border-radius: 10px;
+            }}
+        """)
+        wrapper_lay = QVBoxLayout(wrapper)
+        wrapper_lay.setContentsMargins(0, 0, 0, 0)
+        wrapper_lay.setSpacing(0)
+
+        # Заголовок — кликабельный
+        header_text = f"v{entry.get('version', '?')}  ·  {entry.get('date', '')}"
+        if entry.get("title"):
+            header_text += f"  ·  {entry['title']}"
+
+        btn = QToolButton()
+        btn.setText(header_text)
+        btn.setCheckable(True)
+        btn.setChecked(is_current)
+        btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        btn.setArrowType(Qt.DownArrow if is_current else Qt.RightArrow)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn.setStyleSheet(f"""
+            QToolButton {{
+                background: transparent;
+                color: {c['ACCENT'] if is_current else c['TEXT']};
+                font-size: 12px;
+                font-weight: bold;
+                padding: 10px 12px;
+                text-align: left;
+                border: none;
+            }}
+            QToolButton:hover {{
+                color: {c['ACCENT']};
+            }}
+        """)
+        wrapper_lay.addWidget(btn)
+
+        # Развёрнутое содержимое
+        details = QWidget()
+        details.setStyleSheet("background: transparent; border: none;")
+        details_lay = QVBoxLayout(details)
+        details_lay.setContentsMargins(28, 0, 16, 12)
+        details_lay.setSpacing(4)
+
+        for change in entry.get("changes", []):
+            lbl = QLabel(f"•  {change}")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color: {c['TEXT']}; font-size: 12px; "
+                f"background: transparent; border: none;"
+            )
+            details_lay.addWidget(lbl)
+
+        details.setVisible(is_current)
+        wrapper_lay.addWidget(details)
+
+        def on_toggle(checked, _btn=btn, _det=details):
+            _det.setVisible(checked)
+            _btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+        btn.toggled.connect(on_toggle)
+        return wrapper
 
     def _check_import(self, name):
         try:
@@ -1767,9 +2662,8 @@ class SettingsDialog(QDialog):
         ) == QMessageBox.Yes:
             return
         try:
-            import importlib
             import sounds as sounds_mod
-            importlib.reload(sounds_mod)
+
             d = sounds_mod.sounds_dir()
             if os.path.isdir(d):
                 for f in os.listdir(d):
@@ -1778,15 +2672,17 @@ class SettingsDialog(QDialog):
                             os.remove(os.path.join(d, f))
                         except Exception:
                             pass
+
             sounds_mod.ensure_sounds_folder()
-            sounds_mod.init(
-                enabled=self.chk_sounds.isChecked(),
-                volume=self.slider_volume.value(),
-                event_flags={
-                    key: box.isChecked()
-                    for key, box in self.sound_event_boxes.items()
-                },
-            )
+
+            sounds_mod.set_enabled(self.chk_sounds.isChecked())
+            sounds_mod.set_volume(self.slider_volume.value())
+            sounds_mod.set_event_flags({
+                key: box.isChecked()
+                for key, box in self.sound_event_boxes.items()
+            })
+            sounds_mod.reload_sounds()
+
             show_info(self, self.colors, "Готово",
                       "Стандартные звуки восстановлены.")
         except Exception as e:
@@ -1798,12 +2694,22 @@ class SettingsDialog(QDialog):
         if path and os.path.exists(path):
             pix = QPixmap(path)
             if not pix.isNull():
-                pix = pix.scaled(
-                    40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+                try:
+                    pix = pix.scaled(
+                        40, 40,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                except Exception:
+                    try:
+                        pix = pix.scaled(int(40), int(40))
+                    except Exception:
+                        pass
                 self.tray_icon_preview.setPixmap(pix)
                 return
-        self.tray_icon_preview.setText("Л")
+        name = (self.settings.get("app_name") or APP_NAME).strip()
+        letter = name[0].upper() if name else "?"
+        self.tray_icon_preview.setText(letter)
         self.tray_icon_preview.setStyleSheet(
             f"background-color: {self.colors['ACCENT']}; "
             f"color: {self.colors['BG']}; "
@@ -1831,6 +2737,94 @@ class SettingsDialog(QDialog):
         self.settings["tray_icon"] = ""
         self.tray_icon_preview.setPixmap(QPixmap())
         self._refresh_tray_icon_preview()
+
+    # ==================== ФОН ОКНА ====================
+    def _pick_gradient_color(self, which):
+        """Открывает выбор цвета для 1-й или 2-й точки градиента."""
+        current = (
+            self._gradient_color1 if which == 1
+            else self._gradient_color2
+        )
+        initial = QColor(current) if current else QColor(
+            self.colors.get("ACCENT", "#89B4FA")
+        )
+
+        dlg = QColorDialog(initial, self)
+        dlg.setWindowTitle(
+            "Первый цвет градиента" if which == 1
+            else "Второй цвет градиента"
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        color = dlg.currentColor()
+        if not color.isValid():
+            return
+        hex_str = color.name().upper()
+        if which == 1:
+            self._gradient_color1 = hex_str
+        else:
+            self._gradient_color2 = hex_str
+        self._refresh_gradient_buttons()
+
+    def _reset_gradient_colors(self):
+        self._gradient_color1 = ""
+        self._gradient_color2 = ""
+        self._refresh_gradient_buttons()
+
+    def _refresh_gradient_buttons(self):
+        c = self.colors
+
+        for which, btn, val in (
+            (1, self.btn_gradient_color1, self._gradient_color1),
+            (2, self.btn_gradient_color2, self._gradient_color2),
+        ):
+            if val:
+                bg = val
+                fg = "#FFFFFF"
+                if QColor(val).lightness() > 160:
+                    fg = "#000000"
+                btn.setText(val.upper())
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {bg};
+                        color: {fg};
+                        border: 2px solid {c['BORDER_HOV']};
+                        border-radius: 8px;
+                        font-size: 10px;
+                        font-weight: bold;
+                    }}
+                """)
+            else:
+                btn.setText("(авто)")
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {c['CARD']};
+                        color: {c['SUBTEXT']};
+                        border: 1px dashed {c['BORDER_HOV']};
+                        border-radius: 8px;
+                        font-size: 10px;
+                    }}
+                """)
+
+    def _pick_bg_file(self):
+        bg_type = self.bg_type_combo.currentData()
+        if bg_type == "image":
+            filter_str = ("Изображения (*.png *.jpg *.jpeg *.bmp *.webp);;"
+                          "Все файлы (*.*)")
+        elif bg_type == "gif":
+            filter_str = "GIF-анимации (*.gif);;Все файлы (*.*)"
+        elif bg_type == "video":
+            filter_str = ("Видео (*.mp4 *.webm *.mkv *.avi *.mov *.wmv);;"
+                          "Все файлы (*.*)")
+        else:
+            filter_str = "Все файлы (*.*)"
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выберите файл фона", "", filter_str
+        )
+        if not path:
+            return
+        self.bg_path_edit.setText(path)
 
     # ==================== УТИЛИТЫ ====================
     def _select_accent(self, key):
@@ -1934,6 +2928,18 @@ class SettingsDialog(QDialog):
             os.startfile(BACKUP_DIR)
         except Exception as e:
             log.error(f"open backups: {e}")
+
+    def _clear_sgdb_cache(self):
+        try:
+            cover_fetcher.clear_id_cache()
+            log.info("Кэш SteamGridDB очищен через UI")
+            show_info(
+                self, self.colors, "Готово",
+                "Кэш обложек SteamGridDB очищен.\n"
+                "Открой Библиотеку игр → Обновить обложки."
+            )
+        except Exception as e:
+            show_error(self, self.colors, "Ошибка", str(e))
 
     def _clear_icons(self):
         clear_cache()
@@ -2397,6 +3403,29 @@ class SettingsDialog(QDialog):
     # ==================== СБОР / СОХРАНЕНИЕ ====================
     def _collect_ui_settings(self):
         s = dict(self.settings)
+        s["app_name"] = (self.app_name_edit.text().strip() or APP_NAME)
+        s["bg_type"] = self.bg_type_combo.currentData()
+        s["bg_path"] = self.bg_path_edit.text().strip()
+        s["bg_opacity"] = int(self.bg_opacity_slider.value())
+        s["bg_video_muted"] = self.chk_bg_video_muted.isChecked()
+        s["bg_gradient_color1"] = getattr(
+            self, "_gradient_color1", ""
+        ) or ""
+        s["bg_gradient_color2"] = getattr(
+            self, "_gradient_color2", ""
+        ) or ""
+        if hasattr(self, "slider_gradient_angle"):
+            s["bg_gradient_angle"] = int(
+                self.slider_gradient_angle.value()
+            )
+        if hasattr(self, "slider_window_opacity"):
+            s["window_opacity"] = int(self.slider_window_opacity.value())
+        if hasattr(self, "font_combo"):
+            s["title_font_family"] = (
+                self.font_combo.currentFont().family()
+                or "Segoe UI"
+            )
+
         s["theme"] = self.theme_combo.currentData()
         s["accent"] = self.selected_accent
         s["tile_scale"] = int(self.tile_scale.value())
@@ -2451,6 +3480,29 @@ class SettingsDialog(QDialog):
         s["enabled_plugins"] = [
             name for name, cb in self._plugin_checks.items() if cb.isChecked()
         ]
+        if hasattr(self, "chk_autobackup"):
+            s["autobackup_enabled"] = self.chk_autobackup.isChecked()
+        if hasattr(self, "spin_autobackup_interval"):
+            s["autobackup_interval_minutes"] = int(
+                self.spin_autobackup_interval.value()
+            )
+        if hasattr(self, "chk_show_load_errors"):
+            s["show_load_errors"] = self.chk_show_load_errors.isChecked()
+        s["discord_enabled"] = self.chk_discord.isChecked()
+        s["discord_client_id"] = (
+            self.discord_client_id_edit.text().strip()
+        )
+        s["discord_large_image"] = (
+                self.discord_large_image_edit.text().strip() or "logo"
+        )
+        s["discord_large_text"] = (
+                self.discord_large_text_edit.text().strip() or APP_NAME
+        )
+        s["discord_show_when_idle"] = self.chk_discord_idle.isChecked()
+        if hasattr(self, "chk_sgdb"):
+            s["steamgriddb_enabled"] = self.chk_sgdb.isChecked()
+        if hasattr(self, "sgdb_api_edit"):
+            s["steamgriddb_api_key"] = self.sgdb_api_edit.text().strip()
         return s
 
     def _save(self):

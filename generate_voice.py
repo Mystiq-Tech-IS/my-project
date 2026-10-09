@@ -20,6 +20,7 @@ CONFIG_PATH = os.path.join(MODEL_DIR, f"{MODEL_NAME}.onnx.json")
 # Русские фразы для событий
 VOICE_PHRASES = {
     "startup":  "Все системы в сети",
+    "ready":    "Все системы проверены. Готов к работе, сэр.",
     "launch":   "Сию секунду, сэр",
     "close":    "Как пожелаете",
     "error":    "Боюсь, это невозможно",

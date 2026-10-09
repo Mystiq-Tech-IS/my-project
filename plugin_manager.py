@@ -15,10 +15,20 @@ except Exception:
     log = logging.getLogger("launcher")
 
 
-PLUGINS_DIR = os.path.join(BASE_DIR, "plugins")
+from config import BASE_DIR, RESOURCE_DIR
+
+# Плагины ищем сначала рядом с .exe (пользовательские),
+# если папки нет — в ресурсах (встроенные примеры)
+_plugins_local = os.path.join(BASE_DIR, "plugins")
+_plugins_builtin = os.path.join(RESOURCE_DIR, "plugins")
+PLUGINS_DIR = _plugins_local if os.path.isdir(_plugins_local) else _plugins_builtin
 
 
 # ============== ШАБЛОНЫ СТАРТОВЫХ ФАЙЛОВ ==============
+# ВАЖНО: эмодзи пишем ЖИВЫМИ символами, а не через "\u{...}".
+# Старая версия с "\\u{1F44B}" в шаблоне приводила к тому, что в файл
+# попадала литеральная последовательность "\u{1F44B}", которую Python
+# при импорте не мог распарсить как unicode escape и валил весь плагин.
 _TEMPLATE_PY = '''"""ШАБЛОН ПЛАГИНА MyLauncher.
 
 Как создать свой плагин:
@@ -93,7 +103,7 @@ class HelloPlugin(Plugin):
         if self.launcher:
             try:
                 self.launcher._show_toast(
-                    "\\u{1F44B} Hello, plugin!",
+                    "👋 Hello, plugin!",
                     "Плагин Hello World загружен",
                     "info",
                 )
@@ -125,13 +135,13 @@ class DayGreeting(Plugin):
     def on_startup(self):
         h = datetime.now().hour
         if 5 <= h < 12:
-            text = "Доброе утро! \\u2600"
+            text = "Доброе утро! ☀"
         elif 12 <= h < 18:
-            text = "Добрый день! \\u{1F324}"
+            text = "Добрый день! 🌤"
         elif 18 <= h < 23:
-            text = "Добрый вечер! \\u{1F319}"
+            text = "Добрый вечер! 🌙"
         else:
-            text = "Доброй ночи! \\u{1F4A4}"
+            text = "Доброй ночи! 💤"
 
         if self.launcher:
             try:
@@ -174,7 +184,7 @@ class SessionStats(Plugin):
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)
 
-        title = QLabel("\\u{1F4CA} Статистика сессии")
+        title = QLabel("📊 Статистика сессии")
         title.setStyleSheet(
             f"color: {colors['ACCENT']}; font-size: 18px; font-weight: bold;"
         )
@@ -198,12 +208,12 @@ class SessionStats(Plugin):
         }
         cats_str = ", ".join(
             cat_names.get(k, k) for k in sorted(self.categories_visited)
-        ) or "\\u2014"
+        ) or "—"
 
         info = QLabel(
-            f"\\u23F1   Время работы: {uptime_str}\\n"
-            f"\\u{1F680}  Запущено программ: {self.launched}\\n"
-            f"\\u{1F5C2}   Категорий просмотрено: "
+            f"⏱   Время работы: {uptime_str}\\n"
+            f"🚀  Запущено программ: {self.launched}\\n"
+            f"🗂   Категорий просмотрено: "
             f"{len(self.categories_visited)}  ({cats_str})"
         )
         info.setStyleSheet(
@@ -244,12 +254,29 @@ class PluginManager:
             log.error(f"PluginManager: не могу создать plugins/: {e}")
 
     def _ensure_examples(self):
-        """Создаёт стартовые файлы в plugins/, если их там нет."""
+        """Создаёт стартовые файлы в plugins/, если их там нет.
+
+        Дополнительно чинит файлы от старых версий, где в шаблон попал
+        литеральный "\\u{...}" — такие файлы не импортируются, потому что
+        Python пытается распарсить это как unicode escape и падает.
+        """
         if not os.path.isdir(PLUGINS_DIR):
             return
         for fname, content in _STARTER_FILES.items():
             path = os.path.join(PLUGINS_DIR, fname)
             if os.path.exists(path):
+                # Проверяем, не битый ли файл от старой версии
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        existing = f.read()
+                    if "\\u{" in existing and content != existing:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        log.info(
+                            f"Исправлен битый пример плагина: {fname}"
+                        )
+                except Exception as e:
+                    log.error(f"Проверка {fname} не удалась: {e}")
                 continue
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -366,6 +393,31 @@ class PluginManager:
             except Exception as e:
                 log.error(f"Плагин {name}, хук {hook_name}: {e}")
         return results
+
+    def collect_theme_overrides(self, theme_name="", accent=""):
+        """Собирает provide_theme_overrides со всех активных плагинов.
+
+        Возвращает dict с объединёнными оверрайдами (поздние плагины
+        перекрывают ранние). Пустой dict — если никто не ответил.
+        """
+        result = {}
+        for name, pl in list(self.plugins.items()):
+            method = getattr(pl, "provide_theme_overrides", None)
+            if not method:
+                continue
+            try:
+                ovr = method(
+                    dict(getattr(self.launcher, "colors", {}) or {})
+                )
+                if isinstance(ovr, dict):
+                    for k, v in ovr.items():
+                        if isinstance(k, str) and isinstance(v, str):
+                            result[k] = v
+            except Exception as e:
+                log.error(
+                    f"Плагин {name}, provide_theme_overrides: {e}"
+                )
+        return result
 
     # ====================== Метаданные для UI ======================
     def list_all(self):

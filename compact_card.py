@@ -16,8 +16,8 @@ class CompactCard(QFrame):
     open_folder      = Signal(dict)
     launch_only      = Signal(dict)
 
-    def __init__(self, app, colors, menu_style=""):
-        super().__init__()
+    def __init__(self, app, colors, menu_style="", parent=None):
+        super().__init__(parent)
         self.app = app
         self.colors = colors
         self.menu_style = menu_style

@@ -32,7 +32,7 @@ class SessionStats(Plugin):
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)
 
-        title = QLabel("\u{1F4CA} Статистика сессии")
+        title = QLabel("📊 Статистика сессии")
         title.setStyleSheet(
             f"color: {colors['ACCENT']}; font-size: 18px; font-weight: bold;"
         )
@@ -56,12 +56,12 @@ class SessionStats(Plugin):
         }
         cats_str = ", ".join(
             cat_names.get(k, k) for k in sorted(self.categories_visited)
-        ) or "\u2014"
+        ) or "—"
 
         info = QLabel(
-            f"\u23F1   Время работы: {uptime_str}\n"
-            f"\u{1F680}  Запущено программ: {self.launched}\n"
-            f"\u{1F5C2}   Категорий просмотрено: "
+            f"⏱   Время работы: {uptime_str}\n"
+            f"🚀  Запущено программ: {self.launched}\n"
+            f"🗂   Категорий просмотрено: "
             f"{len(self.categories_visited)}  ({cats_str})"
         )
         info.setStyleSheet(

@@ -10,6 +10,15 @@ class HelloPlugin(Plugin):
     description = "Показывает приветствие при старте и логирует запуски программ"
     icon = "fa5s.hand-sparkles"
 
+    def on_context_menu(self, app, menu):
+        act = menu.addAction(f"👋 Привет, {app.get('name')}!")
+        act.triggered.connect(
+            lambda: self.log(f"Клик по плагину для {app.get('name')}")
+        )
+
+    def provide_theme_overrides(self, theme):
+        return {"ACCENT": "#FF00FF"}  # маджента
+
     def on_load(self):
         self.launched = 0
         self.log("активирован")
@@ -18,7 +27,7 @@ class HelloPlugin(Plugin):
         if self.launcher:
             try:
                 self.launcher._show_toast(
-                    "\u{1F44B} Hello, plugin!",
+                    "👋 Hello, plugin!",
                     "Плагин Hello World загружен",
                     "info",
                 )

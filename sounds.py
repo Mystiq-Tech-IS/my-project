@@ -20,7 +20,7 @@ except ImportError:
     HAS_SOUND = False
     QSoundEffect = None
 
-from config import BASE_DIR
+from config import BASE_DIR, RESOURCE_DIR
 
 try:
     from storage import log
@@ -29,10 +29,10 @@ except Exception:
     log = logging.getLogger("launcher")
 
 
-SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
+# Звуки лежат в ресурсах (внутри .exe), не рядом с .exe
+SOUNDS_DIR = os.path.join(RESOURCE_DIR, "sounds")
 VOICE_DIR = os.path.join(SOUNDS_DIR, "voice")
 
-# ==================== БИПЫ ====================
 BUILTIN_SOUNDS = {
     "launch":  ("launch.wav",  880.0, 140),
     "close":   ("close.wav",   392.0, 180),
@@ -43,16 +43,17 @@ BUILTIN_SOUNDS = {
     "toggle":  ("toggle.wav",  740.0, 60),
 }
 
-# ==================== ГОЛОСОВЫЕ ФРАЗЫ ====================
-# event_name → имя файла в sounds/voice/
 VOICE_EVENTS = {
-    "startup":  "startup.wav",
-    "launch":   "launch.wav",
-    "close":    "close.wav",
-    "error":    "error.wav",
-    "success":  "success.wav",
-    "info":     "info.wav",
-    "shutdown": "shutdown.wav",
+    "startup":     "startup.wav",
+    "ready":       "ready.wav",
+    "launch":      "launch.wav",
+    "close":       "close.wav",
+    "error":       "error.wav",
+    "success":     "success.wav",
+    "info":        "info.wav",
+    "shutdown":    "shutdown.wav",
+    # «Каждый клик» использует тот же файл, что и «Успешное действие»
+    "click_every": "success.wav",
 }
 
 
@@ -69,7 +70,6 @@ _voice_effects = {}
 _voice_initialized = False
 
 
-# ==================== ГЕНЕРАЦИЯ БИПОВ ====================
 def _generate_wav(path, freq, duration_ms, volume=0.55):
     if os.path.exists(path):
         return
@@ -121,9 +121,7 @@ def ensure_voice_dir():
         log.error(f"ensure_voice_dir: {e}")
 
 
-# ==================== ИНИЦИАЛИЗАЦИЯ ====================
 def init(enabled=True, volume=60, event_flags=None):
-    """Инициализирует бипы."""
     global _initialized, _enabled, _volume, _event_flags
     if not HAS_SOUND:
         log.warning("QSoundEffect недоступен — звуки выключены")
@@ -158,7 +156,6 @@ def init(enabled=True, volume=60, event_flags=None):
 
 
 def init_voice(enabled=True, volume=80, event_flags=None):
-    """Инициализирует голосовые фразы."""
     global _voice_initialized, _voice_enabled, _voice_volume, _voice_flags
     if not HAS_SOUND:
         _voice_initialized = True
@@ -207,7 +204,6 @@ def _apply_voice_volume():
             pass
 
 
-# ==================== БИПЫ — API ====================
 def set_enabled(enabled):
     global _enabled
     _enabled = bool(enabled)
@@ -232,7 +228,6 @@ def set_event_flags(flags):
 
 
 def play(name):
-    """Проигрывает бип."""
     if not _enabled or not HAS_SOUND:
         return
     if _event_flags.get(name) is False:
@@ -246,7 +241,6 @@ def play(name):
         log.error(f"play sound {name}: {e}")
 
 
-# ==================== ГОЛОС — API ====================
 def set_voice_enabled(enabled):
     global _voice_enabled
     _voice_enabled = bool(enabled)
@@ -275,7 +269,6 @@ def has_voice(event):
 
 
 def play_voice(event):
-    """Проигрывает голосовую фразу. Если файла нет — молчит."""
     if not _voice_enabled or not HAS_SOUND:
         return
     if _voice_flags.get(event) is False:
@@ -297,7 +290,20 @@ def reload_voice():
     init_voice(_voice_enabled, int(_voice_volume * 100), _voice_flags)
 
 
-# ==================== ПУТИ ====================
+def reload_sounds():
+    """Пересоздаёт QSoundEffect для бипов (после регенерации .wav).
+
+    ВАЖНО: НЕ использовать importlib.reload(sounds) — он создаёт новый
+    объект модуля, а все импортёры продолжают держать ссылку на старый
+    со сломанными QSoundEffect. Эта функция пересоздаёт их in-place.
+    """
+    global _effects, _initialized
+    _effects = {}
+    _initialized = False
+    init(_enabled, int(_volume * 100), _event_flags)
+    init_voice(_voice_enabled, int(_voice_volume * 100), _voice_flags)
+
+
 def sounds_dir():
     return SOUNDS_DIR
 

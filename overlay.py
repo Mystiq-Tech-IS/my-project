@@ -51,7 +51,6 @@ class LaunchOverlay(QWidget):
 
     def apply_theme(self):
         c = self.colors
-        # Без обводки — только фон и закругление
         self.card.setStyleSheet(f"""
             QFrame {{
                 background-color: {c['CARD']};
@@ -76,11 +75,19 @@ class LaunchOverlay(QWidget):
         self.sub.setText(subtitle)
 
         if pixmap and not pixmap.isNull():
+            try:
+                scaled = pixmap.scaled(
+                    42, 42,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            except Exception:
+                try:
+                    scaled = pixmap.scaled(int(42), int(42))
+                except Exception:
+                    scaled = pixmap
             self.icon_label.setText("")
-            self.icon_label.setPixmap(
-                pixmap.scaled(42, 42, Qt.KeepAspectRatio,
-                              Qt.SmoothTransformation)
-            )
+            self.icon_label.setPixmap(scaled)
         else:
             self.icon_label.setPixmap(self.icon_label.pixmap() or None)
             self.icon_label.setText("🚀")

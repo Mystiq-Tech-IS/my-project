@@ -52,12 +52,30 @@ class Plugin:
         """Лаунчер собирается завершиться."""
         pass
 
+    def on_app_launch_pre(self, app):
+        """Перед запуском программы. Верните False, чтобы отменить запуск.
+
+        app — dict с 'name', 'path', 'category'. Можно что-то проверить
+        (например, лимит времени) и вернуть False для отмены.
+        Возврат None или True — запуск продолжится.
+        """
+        return True
+
     def on_app_launch(self, app):
         """Программа успешно запущена. app — dict с 'name', 'path', 'category'."""
         pass
 
     def on_app_close(self, app):
         """Программа завершается (kill или закрытие через лаунчер)."""
+        pass
+
+    def on_card_created(self, card):
+        """Карточка программы создана. Можно её кастомизировать.
+
+        card — QFrame (TileCard). Можно изменить tooltip, добавить
+        собственные сигналы, навесить бейджи через paintEvent (если
+        наследуетесь) и т.п.
+        """
         pass
 
     def on_category_change(self, category_key):
@@ -87,3 +105,13 @@ class Plugin:
         menu — QMenu (можно добавлять свои QAction). Ничего не возвращай.
         """
         pass
+
+    def provide_theme_overrides(self, theme):
+        """Верните dict с переопределениями цветов темы или None.
+
+        Например: {"ACCENT": "#FF00FF", "BG": "#000000"}
+        Оверрайды применяются поверх текущей темы. Ключи — как в themes.py:
+        BG, BG_ALT, CARD, CARD_HOVER, BORDER, BORDER_HOV,
+        TEXT, SUBTEXT, ACCENT, ACCENT_HOV, DANGER, OK, OK_DIM.
+        """
+        return None

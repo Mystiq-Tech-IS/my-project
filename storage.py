@@ -24,6 +24,20 @@ BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 BACKUP_KEEP = 7
 
 
+# Последняя ошибка загрузки — чтобы UI мог показать диалог.
+_last_load_error = ""
+
+
+def get_last_load_error():
+    """Возвращает текст последней ошибки загрузки ('' — если всё ок)."""
+    return _last_load_error
+
+
+def clear_last_load_error():
+    global _last_load_error
+    _last_load_error = ""
+
+
 def _normalize_category(value):
     if not value:
         return "other"
@@ -33,17 +47,14 @@ def _normalize_category(value):
     return "other"
 
 
-def backup_apps():
-    if not os.path.exists(APPS_PATH):
-        return
+# ==================== БЭКАПЫ ====================
+
+def _cleanup_backups(prefix):
+    """Удаляет старые файлы {prefix}_*.json, оставляя BACKUP_KEEP свежих."""
     try:
-        os.makedirs(BACKUP_DIR, exist_ok=True)
-        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        dst = os.path.join(BACKUP_DIR, f"apps_{stamp}.json")
-        shutil.copy2(APPS_PATH, dst)
         files = sorted(
             [f for f in os.listdir(BACKUP_DIR)
-             if f.startswith("apps_") and f.endswith(".json")],
+             if f.startswith(prefix) and f.endswith(".json")],
             reverse=True,
         )
         for old in files[BACKUP_KEEP:]:
@@ -51,12 +62,74 @@ def backup_apps():
                 os.remove(os.path.join(BACKUP_DIR, old))
             except Exception:
                 pass
+    except Exception:
+        pass
+
+
+def backup_apps():
+    """Быстрый бэкап только apps.json (вызывается при старте)."""
+    if not os.path.exists(APPS_PATH):
+        return
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dst = os.path.join(BACKUP_DIR, f"apps_{stamp}.json")
+        shutil.copy2(APPS_PATH, dst)
+        _cleanup_backups("apps_")
         log.info(f"Бэкап создан: {dst}")
     except Exception as e:
         log.error(f"Не удалось создать бэкап: {e}")
 
 
+def backup_all():
+    """Полный бэкап apps + settings + presets. Используется автобэкапом."""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        copied = []
+        for src, prefix in [
+            (APPS_PATH, "apps"),
+            (SETTINGS_PATH, "settings"),
+            (PRESETS_PATH, "presets"),
+        ]:
+            if os.path.exists(src):
+                dst = os.path.join(BACKUP_DIR, f"{prefix}_{stamp}.json")
+                shutil.copy2(src, dst)
+                copied.append(prefix)
+                _cleanup_backups(f"{prefix}_")
+
+        if copied:
+            log.info(f"Автобэкап: {', '.join(copied)} → {stamp}")
+        return True
+    except Exception as e:
+        log.error(f"Автобэкап не удался: {e}")
+        return False
+
+
+def save_broken_file(path):
+    """Сохраняет битый файл рядом с бэкапами с суффиксом .broken."""
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        name = os.path.basename(path)
+        dst = os.path.join(BACKUP_DIR, f"{name}.broken_{stamp}")
+        shutil.copy2(path, dst)
+        log.warning(f"Битый файл сохранён: {dst}")
+        return dst
+    except Exception as e:
+        log.error(f"save_broken_file: {e}")
+        return ""
+
+
+# ==================== APPS ====================
+
 def load_apps():
+    """Загружает apps.json. При ошибке — сохраняет битый файл и вернёт дефолт."""
+    global _last_load_error
+
     if not os.path.exists(APPS_PATH):
         result = []
         for i, a in enumerate(DEFAULT_APPS):
@@ -69,9 +142,33 @@ def load_apps():
             item["category"] = _normalize_category(item.get("category"))
             result.append(item)
         return result
+
     try:
         with open(APPS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        if not isinstance(data, list):
+            raise ValueError("apps.json должен содержать список")
+
+    except Exception as e:
+        err = f"{e}"
+        log.error(f"Не удалось загрузить apps.json: {err}")
+
+        # Сохраняем битый файл
+        broken_path = save_broken_file(APPS_PATH)
+        _last_load_error = (
+            f"Файл apps.json повреждён и не может быть прочитан.\n\n"
+            f"Ошибка: {err}\n\n"
+            f"Резервная копия сохранена:\n"
+            f"{broken_path or 'не удалось сохранить'}\n\n"
+            f"Загружен пустой список программ. "
+            f"Восстановите файл из папки backups."
+        )
+
+        return [dict(a) for a in DEFAULT_APPS]
+
+    # Валидация и нормализация
+    try:
         for i, a in enumerate(data):
             a.setdefault("favorite", False)
             a.setdefault("launch_count", 0)
@@ -86,10 +183,14 @@ def load_apps():
             a["category"] = _normalize_category(a.get("category"))
             a.pop("_has_update", None)
             a.pop("_category_cover_folder", None)
+            a.pop("_auto_cover_enabled", None)
         return data
     except Exception as e:
-        log.error(f"Не удалось загрузить apps.json: {e}")
-        return [dict(a) for a in DEFAULT_APPS]
+        log.error(f"Ошибка валидации apps.json: {e}")
+        _last_load_error = (
+            f"apps.json содержит некорректные записи: {e}"
+        )
+        return []
 
 
 def save_apps(apps):
@@ -100,6 +201,7 @@ def save_apps(apps):
             d.pop("_has_update", None)
             d.pop("_clear_hotkey", None)
             d.pop("_category_cover_folder", None)
+            d.pop("_auto_cover_enabled", None)
             clean.append(d)
         with open(APPS_PATH, "w", encoding="utf-8") as f:
             json.dump(clean, f, ensure_ascii=False, indent=2)
@@ -108,12 +210,15 @@ def save_apps(apps):
 
 
 # ==================== PRESETS ====================
+
 def load_presets():
     if not os.path.exists(PRESETS_PATH):
         return [dict(p) for p in DEFAULT_PRESETS]
     try:
         with open(PRESETS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError("presets.json должен быть списком")
         for p in data:
             p.setdefault("name", "Без имени")
             p.setdefault("icon", "🚀")
@@ -122,6 +227,7 @@ def load_presets():
         return data
     except Exception as e:
         log.error(f"Не удалось загрузить presets.json: {e}")
+        save_broken_file(PRESETS_PATH)
         return [dict(p) for p in DEFAULT_PRESETS]
 
 
@@ -134,25 +240,29 @@ def save_presets(presets):
 
 
 # ==================== SETTINGS ====================
+
 def load_settings():
     if not os.path.exists(SETTINGS_PATH):
         return dict(DEFAULT_SETTINGS)
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             s = json.load(f)
+        if not isinstance(s, dict):
+            raise ValueError("settings.json должен быть словарём")
         merged = dict(DEFAULT_SETTINGS)
         merged.update(s)
-        for k in ("sound_events", "category_companions",
-                  "category_covers", "subcategories"):
+        for k in ("sound_events", "voice_events",
+                  "category_companions", "category_covers",
+                  "subcategories"):
             default_val = DEFAULT_SETTINGS.get(k) or {}
             user_val = s.get(k) or {}
             m = dict(default_val)
             m.update(user_val)
             merged[k] = m
-        # enabled_plugins — список, оставим как есть
         return merged
     except Exception as e:
         log.error(f"Не удалось загрузить settings.json: {e}")
+        save_broken_file(SETTINGS_PATH)
         return dict(DEFAULT_SETTINGS)
 
 

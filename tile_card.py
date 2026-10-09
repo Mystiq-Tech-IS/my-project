@@ -1,14 +1,21 @@
-"""Плитка программы с масштабированием, drag-n-drop, заметками и обновлениями."""
+"""Плитка программы с масштабированием, drag-n-drop, заметками и обновлениями.
+
+Обложки загружаются ЛЕНИВО: при создании карточки ставится placeholder,
+реальная обложка готовится в фоновом потоке через QThreadPool и
+подменяется по сигналу.
+"""
 
 import os
 import json
 import math
 import ctypes
+import threading
 from ctypes import wintypes
 from PySide6.QtWidgets import QFrame, QMenu
 from PySide6.QtCore import (
     Qt, Signal, QRect, QRectF, QPointF, QMimeData, QPoint,
     QVariantAnimation, QEasingCurve, QPropertyAnimation,
+    QThreadPool, QRunnable, QObject, QTimer,
 )
 from PySide6.QtGui import (
     QCursor, QColor, QPixmap, QPainter, QPainterPath, QFont, QBrush,
@@ -33,6 +40,20 @@ except Exception:
 DRAG_MIME = "application/x-launcher-app"
 
 
+# ============== БЕЗОПАСНЫЙ SCALED ==============
+def _scaled(pix, w, h,
+            aspect=Qt.AspectRatioMode.KeepAspectRatio,
+            transform=Qt.TransformationMode.SmoothTransformation):
+    """Обёртка над QPixmap.scaled с явным int() — фикс PySide6 6.11."""
+    try:
+        return pix.scaled(int(w), int(h), aspect, transform)
+    except Exception:
+        try:
+            return pix.scaled(int(w), int(h))
+        except Exception:
+            return pix
+
+
 # ================= ВЕРСИЯ EXE =================
 class _VS_FIXEDFILEINFO(ctypes.Structure):
     _fields_ = [
@@ -53,17 +74,32 @@ class _VS_FIXEDFILEINFO(ctypes.Structure):
 
 
 def get_exe_version(path):
-    """Возвращает строку вида '1.2.3.4' из метаданных exe (или '')."""
-    if not path or not os.path.isfile(path):
+    """Возвращает строку вида '1.2.3.4' из метаданных exe (или '').
+
+    Умеет разворачивать .lnk-ярлыки через process_check.resolve_target.
+    """
+    if not path:
         return ""
-    if not path.lower().endswith(".exe"):
+
+    real = path
+    if path.lower().endswith(".lnk"):
+        try:
+            from process_check import resolve_target
+            real = resolve_target(path) or path
+        except Exception:
+            real = path
+
+    if not real or not os.path.isfile(real):
         return ""
+    if not real.lower().endswith(".exe"):
+        return ""
+
     try:
-        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(real, None)
         if not size:
             return ""
         buf = ctypes.create_string_buffer(size)
-        if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, buf):
+        if not ctypes.windll.version.GetFileVersionInfoW(real, 0, size, buf):
             return ""
         r = ctypes.c_void_p()
         length = wintypes.UINT()
@@ -116,6 +152,7 @@ KILL_BTN_H = BASE_KILL_BTN_H
 
 
 def set_scale(tile_percent, icon_percent):
+    """Пересчитывает глобальные размеры плиток."""
     global SCALE_TILE, SCALE_ICON
     global TILE_WIDTH, TILE_HEIGHT, COVER_HEIGHT, TILE_SPACING, RADIUS
     global KILL_BTN_X, KILL_BTN_Y, KILL_BTN_W, KILL_BTN_H
@@ -166,29 +203,34 @@ def clear_fa_cache():
 
 def _cover_pixmap(path, w, h):
     try:
+        w, h = int(w), int(h)
         pix = QPixmap(path)
         if pix.isNull():
             return None
-        pix = pix.scaled(
-            w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        pix = _scaled(
+            pix, w, h,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
         )
         x = max(0, (pix.width() - w) // 2)
         y = max(0, (pix.height() - h) // 2)
-        return pix.copy(x, y, w, h)
+        return pix.copy(int(x), int(y), w, h)
     except Exception:
         return None
 
 
 # ============== АВТО-ОБЛОЖКИ ИЗ ПАПКИ КАТЕГОРИИ ==============
 _cover_file_cache = {}
+_cover_cache_lock = threading.Lock()
 
 
 def pick_cover_from_folder(folder, seed=""):
     if not folder or not os.path.isdir(folder):
         return ""
     key = (folder, str(seed))
-    if key in _cover_file_cache:
-        return _cover_file_cache[key]
+    with _cover_cache_lock:
+        if key in _cover_file_cache:
+            return _cover_file_cache[key]
     try:
         exts = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
         files = sorted(
@@ -196,18 +238,21 @@ def pick_cover_from_folder(folder, seed=""):
             if f.lower().endswith(exts)
         )
         if not files:
-            _cover_file_cache[key] = ""
+            with _cover_cache_lock:
+                _cover_file_cache[key] = ""
             return ""
         idx = hash(str(seed)) % len(files)
         result = os.path.join(folder, files[idx])
-        _cover_file_cache[key] = result
+        with _cover_cache_lock:
+            _cover_file_cache[key] = result
         return result
     except Exception:
         return ""
 
 
 def clear_cover_file_cache():
-    _cover_file_cache.clear()
+    with _cover_cache_lock:
+        _cover_file_cache.clear()
 
 
 # ============== ГРАДИЕНТ ДЛЯ РАМКИ ==============
@@ -223,7 +268,6 @@ def _make_border_brush(color_a, color_b, w, h, diagonal=True):
 
 
 def _blend_color(c1, c2, t):
-    """Плавный переход между двумя QColor."""
     t = max(0.0, min(1.0, float(t)))
     r = int(c1.red()   + (c2.red()   - c1.red())   * t)
     g = int(c1.green() + (c2.green() - c1.green()) * t)
@@ -231,6 +275,81 @@ def _blend_color(c1, c2, t):
     a = int(c1.alpha() + (c2.alpha() - c1.alpha()) * t)
     return QColor(r, g, b, a)
 
+
+# ============== ФОНОВАЯ ЗАГРУЗКА ОБЛОЖЕК ==============
+
+class _CoverLoaderSignals(QObject):
+    done = Signal(object)
+
+
+class _CoverLoaderTask(QRunnable):
+    def __init__(self, app, colors, icon_png_path, target_w, target_h,
+                 signals):
+        super().__init__()
+        self.app = app
+        self.colors = colors
+        self.icon_png_path = icon_png_path
+        self.target_w = target_w
+        self.target_h = target_h
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    def _cleanup_icon(self):
+        if self.icon_png_path:
+            try:
+                os.remove(self.icon_png_path)
+            except Exception:
+                pass
+            self.icon_png_path = None
+
+    def run(self):
+        path = None
+        try:
+            path = self._prepare_path()
+        except Exception as e:
+            log.error(f"_CoverLoaderTask.run: {e}")
+            path = None
+        finally:
+            self._cleanup_icon()
+        try:
+            self.signals.done.emit(path)
+        except Exception:
+            pass
+
+    def _prepare_path(self):
+        app = self.app
+        colors = self.colors
+
+        custom = app.get("custom_cover", "")
+        if custom and os.path.exists(custom):
+            return custom
+
+        folder = app.get("_category_cover_folder", "")
+        if folder:
+            picked = pick_cover_from_folder(
+                folder, seed=app.get("path", "")
+            )
+            if picked:
+                return picked
+
+        auto = app.get("_auto_cover_enabled", False)
+        if auto and self.icon_png_path:
+            try:
+                import cover_generator
+                result = cover_generator.ensure_cover_file(
+                    app, colors,
+                    w=max(200, self.target_w * 2),
+                    h=max(140, self.target_h * 2),
+                    icon_png_path=self.icon_png_path,
+                )
+                return result
+            except Exception as e:
+                log.error(f"auto cover: {e}")
+
+        return None
+
+
+# ================= КАРТОЧКА =================
 
 class TileCard(QFrame):
     clicked                = Signal(dict)
@@ -252,9 +371,11 @@ class TileCard(QFrame):
     set_note_requested     = Signal(dict)
     accept_update          = Signal(dict)
     drop_on_requested      = Signal(dict, dict)
+    launch_admin_requested = Signal(dict)
 
-    def __init__(self, app, colors, menu_style="", is_launching=False):
-        super().__init__()
+    def __init__(self, app, colors, menu_style="", is_launching=False,
+                 parent=None):
+        super().__init__(parent)
         self.app = app
         self.colors = colors
         self.menu_style = menu_style
@@ -265,15 +386,14 @@ class TileCard(QFrame):
         self._drag_start = None
         self._note_badge_rect = None
         self._over_note_badge = False
+        self.context_menu_hook = None
 
-        # --- Пружинный hover ---
         self._hover_progress = 0.0
         self._hover_anim = QVariantAnimation(self)
         self._hover_anim.setDuration(220)
         self._hover_anim.setEasingCurve(QEasingCurve.OutBack)
         self._hover_anim.valueChanged.connect(self._on_hover_anim)
 
-        # --- Ripple при клике ---
         self._ripple_progress = 0.0
         self._ripple_pos = QPointF(0, 0)
         self._ripple_anim = QVariantAnimation(self)
@@ -295,10 +415,8 @@ class TileCard(QFrame):
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
-        # Кастомный tooltip — отключаем системный
         self.setToolTip("")
 
-        # Свечение
         self._glow = 1.0
         self._glow_anim = None
         if self.running and SETTINGS["show_glow"]:
@@ -311,42 +429,83 @@ class TileCard(QFrame):
             self._glow_anim.valueChanged.connect(self._on_glow)
             self._glow_anim.start()
 
-        # Обложка
         self._cover_pix = None
-        if SETTINGS["show_covers"]:
-            custom_cover = app.get("custom_cover", "")
-            if custom_cover and os.path.exists(custom_cover):
-                self._cover_pix = _cover_pixmap(
-                    custom_cover, TILE_WIDTH, COVER_HEIGHT
-                )
-            else:
-                folder = app.get("_category_cover_folder", "")
-                picked = ""
-                if folder:
-                    picked = pick_cover_from_folder(
-                        folder, seed=app.get("path", "")
-                    )
-                if picked:
-                    self._cover_pix = _cover_pixmap(
-                        picked, TILE_WIDTH, COVER_HEIGHT
-                    )
-                else:
-                    # Pillow — авто-генерация из иконки
-                    auto = app.get("_auto_cover_enabled", False)
-                    if auto:
-                        try:
-                            import cover_generator
-                            self._cover_pix = cover_generator.generate_cover(
-                                app, colors,
-                                w=max(200, TILE_WIDTH * 2),
-                                h=max(140, COVER_HEIGHT * 2),
-                            )
-                        except Exception as e:
-                            log.error(f"auto cover: {e}")
-                            self._cover_pix = None
+        self._cover_signals = None
+        self._cover_loading = False
+        self._needs_cover = bool(SETTINGS.get("show_covers", True))
 
-        icon_size = _si(32) if self._cover_pix else _si(72)
-        self._icon = get_icon(app, icon_size)
+        icon_size = _si(32) if self._needs_cover else _si(72)
+        self._icon_size = icon_size
+        self._icon = self._make_fast_placeholder_icon(icon_size)
+
+        if self._needs_cover:
+            self._schedule_cover_load()
+        QTimer.singleShot(50, self._load_real_icon)
+
+    # ============ БЫСТРЫЙ PLACEHOLDER ============
+    def _make_fast_placeholder_icon(self, size):
+        try:
+            from icons import _make_placeholder
+            return _make_placeholder(self.app.get("path", ""), size)
+        except Exception:
+            pix = QPixmap(size, size)
+            pix.fill(Qt.transparent)
+            return pix
+
+    # ============ ФОНОВАЯ ЗАГРУЗКА ОБЛОЖКИ ============
+    def _schedule_cover_load(self):
+        if self._cover_loading:
+            return
+        self._cover_loading = True
+
+        icon_png_path = None
+        try:
+            import cover_generator
+            key = cover_generator._cache_key(
+                self.app,
+                max(200, TILE_WIDTH * 2),
+                max(140, COVER_HEIGHT * 2),
+                self.colors.get("ACCENT", "#89B4FA"),
+            )
+            icon_png_path = cover_generator._save_icon_as_png(
+                self.app, key, 256
+            )
+        except Exception as e:
+            log.error(f"_schedule_cover_load icon: {e}")
+            icon_png_path = None
+
+        signals = _CoverLoaderSignals()
+        signals.done.connect(self._on_cover_ready)
+
+        task = _CoverLoaderTask(
+            self.app, self.colors, icon_png_path,
+            TILE_WIDTH, COVER_HEIGHT, signals,
+        )
+        QThreadPool.globalInstance().start(task)
+
+        self._cover_signals = signals
+
+    def _on_cover_ready(self, path):
+        try:
+            self._cover_loading = False
+            if not path or not os.path.exists(path):
+                return
+            pix = _cover_pixmap(path, TILE_WIDTH, COVER_HEIGHT)
+            if pix is None or pix.isNull():
+                return
+            self._cover_pix = pix
+            self.update()
+        except Exception as e:
+            log.error(f"_on_cover_ready: {e}")
+
+    def _load_real_icon(self):
+        try:
+            pix = get_icon(self.app, self._icon_size)
+            if pix and not pix.isNull():
+                self._icon = pix
+                self.update()
+        except Exception as e:
+            log.error(f"_load_real_icon: {e}")
 
     # ============ АНИМАЦИИ ============
     def _on_glow(self, value):
@@ -392,10 +551,8 @@ class TileCard(QFrame):
         w, h = self.width(), self.height()
         radius = RADIUS
 
-        # hover_progress может слегка превышать 1 из-за OutBack
         hover_t = max(0.0, min(1.5, self._hover_progress))
 
-        # ---- Определяем состояние рамки ----
         state = "normal"
         if self.selected or self._hover:
             state = "accent"
@@ -409,7 +566,6 @@ class TileCard(QFrame):
         else:
             border_w = _s(1)
 
-        # ---- Свечение (за рамкой) ----
         if (self.running and self.exists and not self.selected
                 and SETTINGS["show_glow"]):
             glow_rgb = QColor(c["OK"])
@@ -446,7 +602,6 @@ class TileCard(QFrame):
                     r, r
                 )
 
-        # ---- Фон (плавный hover через spring-прогресс) ----
         card_base = QColor(c["CARD"])
         card_hover = QColor(c["CARD_HOVER"])
         bg_color = _blend_color(card_base, card_hover, hover_t)
@@ -458,7 +613,6 @@ class TileCard(QFrame):
             radius - border_w, radius - border_w,
         )
 
-        # ---- Рамка ----
         if state == "normal":
             p.setPen(QPen(QColor(c["BORDER"]), border_w))
             p.setBrush(Qt.NoBrush)
@@ -487,7 +641,6 @@ class TileCard(QFrame):
                 radius, radius,
             )
 
-        # ---- COVER ----
         cover_rect = QRectF(
             border_w, border_w,
             w - border_w * 2, COVER_HEIGHT - border_w,
@@ -763,10 +916,9 @@ class TileCard(QFrame):
                 p.setFont(QFont("Segoe UI", _fs(9), QFont.Bold))
                 p.drawText(rect, Qt.AlignCenter, "Завершить")
 
-        # ====== RIPPLE (поверх всего) ======
+        # ====== RIPPLE ======
         if self._ripple_progress > 0.001:
             try:
-                # Клиппинг по общему скруглению плитки
                 clip_path = QPainterPath()
                 clip_path.addRoundedRect(
                     QRectF(0, 0, w, h), radius, radius
@@ -818,13 +970,12 @@ class TileCard(QFrame):
             self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
             self._hover_anim.start()
         except Exception:
-            self._hover_progress = 0.0
+            pass
         self.update()
 
     def _build_note_tooltip(self):
         name = self.app.get("name", "")
         note = (self.app.get("note") or "").strip()
-        # Простой HTML
         safe_name = (name
                      .replace("&", "&amp;")
                      .replace("<", "&lt;")
@@ -853,7 +1004,6 @@ class TileCard(QFrame):
                 self._start_drag()
                 self._drag_start = None
 
-        # Кастомный tooltip на бейдже заметки
         note_rect = self._note_badge_rect
         if note_rect is not None and note_rect.contains(QPointF(pos)):
             if not self._over_note_badge:
@@ -918,7 +1068,6 @@ class TileCard(QFrame):
             if self._is_over_kill_btn(pos):
                 self.kill_process.emit(self.app)
                 return
-            # Ripple от точки клика
             self._start_ripple(pos)
             self._drag_start = pos
 
@@ -947,6 +1096,12 @@ class TileCard(QFrame):
             return menu.addAction(text)
 
         act_launch = add_action("fa5s.play", "Запустить", c["ACCENT"])
+        act_launch_admin = add_action(
+            "fa5s.user-shield",
+            "Запустить от имени администратора",
+            c["TEXT"],
+        )
+
         menu.addSeparator()
         act_up_first  = add_action("fa5s.angle-double-up", "Наверх")
         act_up        = add_action("fa5s.angle-up", "Выше")
@@ -1021,11 +1176,20 @@ class TileCard(QFrame):
         menu.addSeparator()
         act_delete = add_action("fa5s.trash-alt", "Удалить", c["DANGER"])
 
+        # Хук плагинов — могут добавить свои пункты в меню
+        if self.context_menu_hook is not None:
+            try:
+                self.context_menu_hook(self.app, menu)
+            except Exception as e:
+                log.error(f"context_menu_hook: {e}")
+
         chosen = menu.exec(event.globalPos())
         if chosen is None:
             return
         if chosen == act_launch:
             self.clicked.emit(self.app)
+        elif chosen == act_launch_admin:
+            self.launch_admin_requested.emit(self.app)
         elif chosen == act_up_first:
             self.move_requested.emit(self.app, "top")
         elif chosen == act_up:

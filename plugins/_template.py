@@ -37,6 +37,18 @@ class MyPlugin(Plugin):
     def on_app_close(self, app):
         pass
 
+    def on_app_launch_pre(self, app):
+        # Верните False, чтобы отменить запуск
+        return True
+
+    def on_card_created(self, card):
+        # card — QFrame. Можно кастомизировать (tooltip, стили)
+        pass
+
+    def provide_theme_overrides(self, theme):
+        # Верните dict цветов для переопределения темы или None
+        return None
+
     def on_category_change(self, category_key):
         pass
 

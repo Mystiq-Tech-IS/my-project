@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
     QLabel, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QSize, QEvent
+from PySide6.QtCore import Qt, QSize, QEvent, QTimer
 from PySide6.QtGui import QIcon, QKeyEvent
 
 from icons import get_icon
@@ -136,6 +136,14 @@ class QuickLauncher(QWidget):
         if not app:
             return
         self.hide()
+
+        # Звук «Каждый клик» — как при обычном запуске
+        try:
+            import sounds
+            sounds.play_voice("click_every")
+        except Exception:
+            pass
+
         result = launch(app)
         if not result.ok:
             log.error(f"QuickLauncher: не удалось запустить {app.get('name')}: {result.error}")
@@ -143,7 +151,6 @@ class QuickLauncher(QWidget):
             log.info(f"QuickLauncher: запущено {app.get('name')}")
 
     def popup(self):
-        """Открывает окно по центру сверху и ставит фокус."""
         self.search.clear()
         self._populate()
 
@@ -187,6 +194,16 @@ class QuickLauncher(QWidget):
         super().keyPressEvent(event)
 
     def focusOutEvent(self, event):
-        # Скрываем при потере фокуса
-        self.hide()
+        # Откладываем проверку — иначе при клике на элемент списка
+        # окно могло исчезнуть до обработки клика.
+        QTimer.singleShot(0, self._maybe_hide_on_focus_loss)
         super().focusOutEvent(event)
+
+    def _maybe_hide_on_focus_loss(self):
+        try:
+            if self.isActiveWindow():
+                return
+            if self.isVisible():
+                self.hide()
+        except Exception:
+            pass

@@ -4,9 +4,35 @@ import os
 from PySide6.QtWidgets import QFileIconProvider
 from PySide6.QtCore import QFileInfo, Qt
 from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
+from PySide6.QtCore import (
+    Qt, Signal, QTimer, QUrl, QPropertyAnimation, QEasingCurve, QSize,
+    QPoint, QEvent, QThreadPool
+)
 
 _provider = QFileIconProvider()
 _cache = {}
+
+
+def _scaled(pix: QPixmap, w: int, h: int) -> QPixmap:
+    """Обёртка над QPixmap.scaled с явными enum-неймспейсами.
+
+    В PySide6 6.11+ аргументы enum-типов иногда не распознаются, если
+    переданы как Qt.X без указания области.
+    """
+    try:
+        return pix.scaled(
+            int(w), int(h),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    except Exception:
+        try:
+            return pix.scaled(int(w), int(h))
+        except Exception:
+            return pix
+
+    # Публичный алиас — используйте везде, где нужен безопасный scaled
+    safe_scaled = _scaled
 
 
 def get_icon(app, size=48):
@@ -22,7 +48,7 @@ def get_icon(app, size=48):
         try:
             p = QPixmap(custom)
             if not p.isNull():
-                pix = p.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pix = _scaled(p, size, size)
         except Exception:
             pix = None
 

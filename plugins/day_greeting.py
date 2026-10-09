@@ -14,13 +14,13 @@ class DayGreeting(Plugin):
     def on_startup(self):
         h = datetime.now().hour
         if 5 <= h < 12:
-            text = "Доброе утро! \u2600"
+            text = "Доброе утро! ☀"
         elif 12 <= h < 18:
-            text = "Добрый день! \u{1F324}"
+            text = "Добрый день! 🌤"
         elif 18 <= h < 23:
-            text = "Добрый вечер! \u{1F319}"
+            text = "Добрый вечер! 🌙"
         else:
-            text = "Доброй ночи! \u{1F4A4}"
+            text = "Доброй ночи! 💤"
 
         if self.launcher:
             try:

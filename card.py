@@ -68,8 +68,9 @@ class AppCard(QFrame):
     kill_process          = Signal(dict)
     set_hotkey_requested  = Signal(dict)
 
-    def __init__(self, app, colors, menu_style="", is_launching=False):
-        super().__init__()
+    def __init__(self, app, colors, menu_style="", is_launching=False,
+                 parent=None):
+        super().__init__(parent)
         self.app = app
         self.colors = colors
         self.menu_style = menu_style

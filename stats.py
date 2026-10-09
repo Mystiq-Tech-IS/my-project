@@ -57,7 +57,32 @@ def _seconds_in_period(entry, days):
     return total
 
 
+# ==================== КОРОТКИЙ ФОРМАТ ====================
+
+def format_short(seconds):
+    """Короткий формат: 12с, 35м, 1ч 20м, 2д 5ч.
+
+    Используется на карточках, где мало места.
+    """
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}с"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}м"
+    hours = minutes // 60
+    minutes = minutes % 60
+    if hours < 24:
+        if minutes:
+            return f"{hours}ч {minutes}м"
+        return f"{hours}ч"
+    days = hours // 24
+    hours = hours % 24
+    return f"{days}д {hours}ч"
+
+
 def format_duration(seconds):
+    """Полный формат для отчётов: '1 ч 20 мин', '2 д 5 ч'."""
     seconds = int(seconds)
     if seconds < 60:
         return f"{seconds} сек"
@@ -73,8 +98,101 @@ def format_duration(seconds):
     return f"{days}д {hours}ч"
 
 
+# ==================== ВРЕМЯ КОНКРЕТНОЙ ИГРЫ ====================
+
+def get_today_seconds(stats, path):
+    """Сколько секунд у программы за сегодня."""
+    if not path:
+        return 0
+    entry = stats.get(path)
+    if not entry:
+        return 0
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily = entry.get("daily") or {}
+    return int(daily.get(today, 0))
+
+
+def get_week_seconds(stats, path):
+    """Время за последние 7 дней."""
+    if not path:
+        return 0
+    entry = stats.get(path)
+    if not entry:
+        return 0
+    return _seconds_in_period(entry, 7)
+
+
+def get_total_seconds(stats, path):
+    """Всё время по программе."""
+    if not path:
+        return 0
+    entry = stats.get(path) or {}
+    return int(entry.get("seconds", 0))
+
+
+def get_month_seconds(stats, path):
+    """Время за последние 30 дней."""
+    if not path:
+        return 0
+    entry = stats.get(path)
+    if not entry:
+        return 0
+    return _seconds_in_period(entry, 30)
+
+
+# ==================== ОБЩЕЕ ВРЕМЯ ====================
+
+def get_today_total(stats, apps):
+    """Общее время за сегодня по всем программам."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    total = 0
+    for app in apps:
+        path = app.get("path", "")
+        entry = stats.get(path)
+        if not entry:
+            continue
+        daily = entry.get("daily") or {}
+        total += int(daily.get(today, 0))
+    return total
+
+
+def get_week_total(stats, apps):
+    """Общее время за последние 7 дней."""
+    total = 0
+    for app in apps:
+        path = app.get("path", "")
+        entry = stats.get(path)
+        if not entry:
+            continue
+        total += _seconds_in_period(entry, 7)
+    return total
+
+
+# ==================== АКТИВНЫЕ СЕГОДНЯ ====================
+
+def get_active_since_today(stats, apps, threshold_min=5):
+    """Программы, в которые играли сегодня (>= threshold_min минут).
+
+    Возвращает список [(app, today_seconds)], отсортированный по убыванию.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    result = []
+    for app in apps:
+        path = app.get("path", "")
+        entry = stats.get(path)
+        if not entry:
+            continue
+        daily = entry.get("daily") or {}
+        secs = int(daily.get(today, 0))
+        if secs >= threshold_min * 60:
+            result.append((app, secs))
+    result.sort(key=lambda x: x[1], reverse=True)
+    return result
+
+
+# ==================== СУЩЕСТВУЮЩИЕ ФУНКЦИИ ====================
+
 def get_top(stats, apps, limit=10, days=None):
-    """Топ программ. days=None — за всё время, иначе за N дней."""
     entries = []
     for app in apps:
         path = app.get("path", "")
@@ -90,10 +208,6 @@ def get_top(stats, apps, limit=10, days=None):
 
 
 def by_category(stats, apps, days=None):
-    """
-    Возвращает dict: {category_key: {'seconds': int, 'apps': [(name, secs)]}}
-    days=None — за всё время.
-    """
     result = {}
     for app in apps:
         path = app.get("path", "")
@@ -122,10 +236,6 @@ def total_by_category(stats, apps):
 
 
 def daily_trend(stats, apps, days=30):
-    """
-    Возвращает список (дата 'YYYY-MM-DD', суммарные_секунды) за последние N дней.
-    Сумма — по всем переданным apps.
-    """
     daily_total = {}
     for app in apps:
         path = app.get("path", "")

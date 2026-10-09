@@ -82,6 +82,7 @@ FA_TO_MDI = {
     "fa5s.cloud-download-alt":    "mdi.cloud-download",
     "fa5s.broom":                 "mdi.broom",
     "fa5s.sync-alt":              "mdi.sync",
+    "fa5s.power-off":             "mdi.power",
 }
 
 
